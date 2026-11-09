@@ -56,6 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             UserDefaults.standard.set(false, forKey: kVisibleKey)
         } else {
             window.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
             UserDefaults.standard.set(true, forKey: kVisibleKey)
         }
     }
@@ -108,6 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         if UserDefaults.standard.object(forKey: kVisibleKey) as? Bool ?? true {
             window.orderFrontRegardless()
         }
+        // LSUIElement（无 Dock 图标）的应用不会自动激活，不显式激活的话
+        // 窗口虽然 orderFront 了但可能被压在别的窗口后面，看起来就像「没打开」
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func defaultOrigin() -> NSPoint {
@@ -120,7 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private func savedOrigin() -> NSPoint? {
         let d = UserDefaults.standard
         guard d.object(forKey: kOriginXKey) != nil, d.object(forKey: kOriginYKey) != nil else { return nil }
-        return NSPoint(x: d.double(forKey: kOriginXKey), y: d.double(forKey: kOriginYKey))
+        let p = NSPoint(x: d.double(forKey: kOriginXKey), y: d.double(forKey: kOriginYKey))
+        // 上次可能被拖到副屏或屏幕外，此时必须回落，否则「启动了但看不见」
+        let rect = NSRect(origin: p, size: kCardSize)
+        let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
+        return onScreen ? p : nil
     }
 
     private func saveOrigin() {
