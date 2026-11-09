@@ -983,9 +983,143 @@ git add -A && git commit -m "feat(sources): 新浪兜底与 alpaca 推流骨架"
 
 ### Task 8: 源注册表、失败降级与冲突裁决
 
+> **实测发现的关键坑（2026-11-10 验证）**：东财的 `secids` 必须给对市场码。把 NYSE 的票（IBM）放到 `105.` 前缀，接口返回 `{"rc":102,"data":null}` —— **整批失败、一只都不回**，而不是只丢那一只。更阴险的是 `105.V`（也是 NYSE）居然会被自动纠正成 `f13=106` 并正常返回，所以随机测几只根本发现不了这个问题。
+> 后果：`normalizeEastmoney` 对 `data:null` 会安全返回 `[]`，**不抛错**。registry 若只看"有没有异常"，会把 100 只票静默算成 0 只，估值直接归零却看不出错。
+> 对策（本任务实现）：① registry 对「返回条数 < 请求条数」必须视为失败而非成功；② 维护 symbol→market 的持久映射并逐只探测，避免猜测；③ 分片与超时。
+
 **Files:**
-- Create: `src/sources/registry.ts`
-- Test: `tests/sources/registry.test.ts`
+- Create: `src/sources/registry.ts`, `src/sources/marketMap.ts`
+- Test: `tests/sources/registry.test.ts`, `tests/sources/marketMap.test.ts`
+
+- [ ] **Step 0: 写 marketMap（symbol → 市场码，带缓存）**
+
+`tests/sources/marketMap.test.ts`：
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { openDb } from '../../src/store/db'
+import { MarketMap } from '../../src/sources/marketMap'
+
+const never = async () => { throw new Error('should not fetch') }
+
+describe('MarketMap', () => {
+  it('已缓存的直接返回，不发起探测', async () => {
+    const db = openDb(':memory:')
+    const m = new MarketMap(db, never)
+    m.remember('AAPL', 105)
+    expect(await m.resolve(['AAPL'])).toEqual({ AAPL: 105 })
+  })
+
+  it('未知符号交给探测器，并写回缓存', async () => {
+    const db = openDb(':memory:')
+    const probe = async (sym: string) => (sym === 'IBM' ? 106 : null)
+    const m = new MarketMap(db, probe)
+    expect(await m.resolve(['IBM'])).toEqual({ IBM: 106 })
+    // 第二次不再探测
+    const m2 = new MarketMap(db, never)
+    expect(await m2.resolve(['IBM'])).toEqual({ IBM: 106 })
+  })
+
+  it('探测不出市场码的符号不出现在结果里', async () => {
+    const db = openDb(':memory:')
+    const m = new MarketMap(db, async () => null)
+    expect(await m.resolve(['ZZZZ'])).toEqual({})
+  })
+})
+```
+
+`src/sources/marketMap.ts`：
+
+```ts
+import type { Db } from '../store/db'
+
+export type MarketProbe = (symbol: string) => Promise<number | null>
+
+/**
+ * 东财 secids 的市场码映射。猜错会让整批请求返回 data:null，所以必须探测而非假设。
+ * 映射持久化到 quote_symbol_market 表，探测只在新符号首次出现时发生。
+ */
+export class MarketMap {
+  private cache = new Map<string, number>()
+
+  constructor(private db: Db, private probe: MarketProbe) {
+    this.db.exec(
+      `create table if not exists quote_symbol_market (
+         symbol text primary key, market integer not null, updated_at integer not null)`,
+    )
+    const rows = this.db.prepare('select symbol, market from quote_symbol_market').all() as Array<{
+      symbol: string
+      market: number
+    }>
+    for (const r of rows) this.cache.set(r.symbol, r.market)
+  }
+
+  remember(symbol: string, market: number): void {
+    this.cache.set(symbol, market)
+    this.db
+      .prepare(
+        `insert into quote_symbol_market (symbol, market, updated_at) values (?,?,?)
+         on conflict(symbol) do update set market=excluded.market, updated_at=excluded.updated_at`,
+      )
+      .run(symbol, market, Date.now())
+  }
+
+  get(symbol: string): number | undefined {
+    return this.cache.get(symbol)
+  }
+
+  async resolve(symbols: string[]): Promise<Record<string, number>> {
+    const out: Record<string, number> = {}
+    for (const s of symbols) {
+      const hit = this.cache.get(s)
+      if (hit !== undefined) {
+        out[s] = hit
+        continue
+      }
+      const probed = await this.probe(s).catch(() => null)
+      if (probed !== null) {
+        this.remember(s, probed)
+        out[s] = probed
+      }
+    }
+    return out
+  }
+}
+```
+
+探测器的实现放在 `src/sources/eastmoney.ts` 追加（下一 Step 用）：逐个试 105→106→107，第一个返回非空单条的即为正确市场。
+
+- [ ] **Step 0b: 给东财追加单只探测器**
+
+在 `src/sources/eastmoney.ts` 末尾追加：
+
+```ts
+/** 逐市场试一只票，返回能查到它的市场码；三个都查不到返回 null */
+export async function probeMarket(symbol: string): Promise<number | null> {
+  for (const market of [MARKET.NASDAQ, MARKET.NYSE, MARKET.AMEX]) {
+    try {
+      const url = `${BASE}?secids=${toSecid(symbol, market)}&fields=f12`
+      const res = await fetch(url, { headers: { 'User-Agent': UA } })
+      if (!res.ok) continue
+      const body = (await res.json()) as { rc?: number; data?: { total?: number } | null }
+      if (body?.rc === 0 && (body.data?.total ?? 0) > 0) return market
+    } catch {
+      // 单个市场探测失败不影响其他市场
+    }
+  }
+  return null
+}
+```
+
+对应测试加到 `tests/sources/eastmoney.test.ts`（网络型，放 network 文件里更合适）：
+
+```ts
+// tests/sources/eastmoney.network.test.ts 追加
+it('能探测出 NYSE 的票与 NASDAQ 的票', async () => {
+  expect(await probeMarket('AAPL')).toBe(105)
+  expect(await probeMarket('IBM')).toBe(106)
+})
+```
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1033,6 +1167,28 @@ describe('QuoteRegistry', () => {
     const r = await reg.getQuotes(['AAPL'], { crossCheck: true })
     expect(r.has('AAPL')).toBe(false)
     expect(reg.lastConflicts()).toContain('AAPL')
+  })
+
+  it('超过 maxBatch 会分片请求，而不是静默截断', async () => {
+    let batches = 0
+    const reg = new QuoteRegistry([
+      fake('a', 0, async (syms) => { batches++; return syms.map((s) => q(s, 110, 'a')) }),
+    ])
+    // fake 的 maxBatch 是 100
+    const syms = Array.from({ length: 150 }, (_, i) => `S${i}`)
+    const r = await reg.getQuotes(syms)
+    expect(batches).toBe(2)
+    expect(r.size).toBe(150)
+  })
+
+  it('返回条数少于请求条数时视为失败并降级，不静默放过', async () => {
+    const reg = new QuoteRegistry([
+      fake('a', 0, async () => [q('AAPL', 110, 'a')]),          // 请求 2 只只回 1 只
+      fake('b', 0, async (syms) => syms.map((s) => q(s, 111, 'b'))),
+    ])
+    const r = await reg.getQuotes(['AAPL', 'MSFT'])
+    expect(r.size).toBe(2)
+    expect(r.get('MSFT')!.sourceId).toBe('b')
   })
 
   it('第三方与主源一致时采用主源', async () => {
@@ -1101,12 +1257,14 @@ export class QuoteRegistry {
     const primary = order[0]!
     let primaryMap: Map<string, Quote>
     try {
-      primaryMap = index(await primary.fetchQuotes(symbols))
+      primaryMap = index(await fetchAll(primary, symbols))
+      // 条数不足同样是失败：东财 market 码错时整批返回 data:null 且不抛错
+      if (primaryMap.size < symbols.length) throw new Error(`${primary.id} incomplete`)
       this.failures.set(primary.id, 0)
     } catch {
       this.markFailure(primary.id)
       if (order[1]) {
-        primaryMap = index(await order[1].fetchQuotes(symbols))
+        primaryMap = index(await fetchAll(order[1]!, symbols))
       } else {
         throw new Error('all sources failed')
       }
@@ -1117,7 +1275,7 @@ export class QuoteRegistry {
     // 交叉校验：主源与校验源比价
     let checkMap: Map<string, Quote>
     try {
-      checkMap = index(await order[1]!.fetchQuotes(symbols))
+      checkMap = index(await fetchAll(order[1]!, symbols))
     } catch {
       return primaryMap
     }
@@ -1154,6 +1312,24 @@ export class QuoteRegistry {
 
 function index(list: Quote[]): Map<string, Quote> {
   return new Map(list.map((q) => [q.symbol, q]))
+}
+
+/** 按源声明的 maxBatch 分片，避免超过 100 只被静默截断 */
+async function fetchAll(source: QuoteSource, symbols: string[], timeoutMs = 5000): Promise<Quote[]> {
+  const out: Quote[] = []
+  for (let i = 0; i < symbols.length; i += source.maxBatch) {
+    const chunk = symbols.slice(i, i + source.maxBatch)
+    out.push(...(await withTimeout(source.fetchQuotes(chunk), timeoutMs)))
+  }
+  return out
+}
+
+/** 防挂死。不真正取消底层请求，但保证调用方能往下走。 */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`source timeout ${ms}ms`)), ms)),
+  ])
 }
 ```
 
