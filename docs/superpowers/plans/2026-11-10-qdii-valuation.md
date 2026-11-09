@@ -1698,11 +1698,20 @@ export function parseNasdaqList(raw: any): CapRow[] {
  * （GOOGL/GOOG、FOX/FOXA、NWS/NWSA）会**每个 symbol 各返回一次同样的公司市值**。
  * 直接求和会把 Alphabet 算成 16.45%（真实约 9.01%，超 1.83 倍），并让其余成分被过大的
  * 分母等比压低约 9%（实测 AAPL −1.13pp、NVDA −0.85pp、MSFT −0.78pp）。
- * 处理：按公司名分组，组内市值均分给各 symbol——同类股本相近时这等价于按股本拆分，
- * 实测能让 Alphabet 合计回到约 9.0%，与第三方权重表吻合。
+ * 处理：按**归一化后的公司名**分组，组内市值均分给各 symbol——同类股本相近时等价于按股本拆分。
+ *
+ * ⚠️ 第一版直接用 `companyName.toLowerCase()` 分组，在真实报文上**静默失效**：
+ * 同一公司两个类别的名字并不相同（`"Alphabet Inc. Class A Common Stock"` vs
+ * `"Alphabet Inc. Class C Capital Stock"`），101 行里没有任何一对重名。
+ * 必须先剥掉证券类型词（Class A/C、Series X、Common/Capital Stock、Voting/Depositary
+ * Shares 等）再分组；归一化后为空则退回 symbol（宁可不去重，也不能把一堆空名并成一组）。
+ * 归一化后实测 Alphabet 合计 8.99%（原 16.45%），其余 99 个 symbol 无误合并，
+ * HON 与 HONA 这类近名不同公司保持分开。
  *
  * 其他偏差（纳指 100 用的是修正市值加权，有 capping）需在 Task 14 回测中单独计量，
- * 不要和这里的去重混成一个数字。
+ * 不要和这里的去重混成一个数字。实测去重后与参考表残差 ≤0.15pp，且头部 capping 影响很小，
+ * 剩余差异主要来自 GOOGL/GOOG 组内均分（参考 4.64/4.37，我们 4.49/4.49）——
+ * 要更准需要两类实际股本比例，而该端点不提供。
  */
 export function weightsFromMarketCap(
   rows: Array<{ symbol: string; marketCap: number; name?: string }>,
@@ -2302,6 +2311,10 @@ Run: `npx tsx scripts/backtest.ts 270042:ndx 012868`
 Expected: 两行输出。270042（指数型）lag0 或 lag1 的 MAE 应在 0.05~0.2pp 量级（验收线 < 0.15pp）；012868（主动型，只有前十大）明显更差。**若 MAE 大于 1pp，说明权重单位或放大倍数错了，先查 `JZBL` 是否已按 /100 转成小数。**
 
 - [ ] **Step 3: 记录判定结果**
+
+> **参考权重源注意**：`slickcharts.com` 直连返回 403（带 UA 也被挡），无法自动对齐第三方权重表。
+> 若需要外部参考，只能手工存一份快照到 `docs/reference/`，并在结论里注明抓取时间。
+> 另外 ndx 报文里含 **SPCX（SpaceX）**，参考表若没有它会显得"第 5 名对不上"——那是数据源差异，不是 bug。
 
 把每只基金的 `exposure`、最优 lag、MAE 抄进设计文档第 3.6 节的下方，作为标定基准。lag 的判定值直接写入 `fund.lag_days` 初值。
 
