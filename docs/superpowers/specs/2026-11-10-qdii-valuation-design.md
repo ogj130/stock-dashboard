@@ -37,24 +37,32 @@
 | 中国公募季报只披露前十大 | 法规层面，全量持仓不可得 |
 | 指数全量成分可得 | `api.nasdaq.com/api/quote/list-type/nasdaq100` → 101 只带 marketCap |
 | 美股行情无 15 分钟延时 | 同秒横向比对，东财/新浪/腾讯时间戳均在 3 秒内 |
-| 币圈四源可达 | Binance / OKX / Coinbase / CoinGecko 全部返回实时价 |
+| 美股存在「无 key 免费实时」多源 | 东财、腾讯、新浪、CNBC、纳斯达克官方均无需注册即可取实时报价 |
+| 美股不存在「无鉴权公共推流」 | 行情是交易所授权商品，Binance 式 `wss://` 公共流无对应物 |
 
-### 2.1 数据源实测
+### 2.1 数据源实测（连续 8 次，每次 100 只，2026-11-10 01:13–01:35）
 
-| 源 | 资产 | 批量 100 只耗时 | 时间戳 | 价格精度 | 定位 |
-|---|---|---|---|---|---|
-| 东财 `push2/ulist.np` | 美股 | 70ms | UTC 秒 `f86` | 2 位 | **主源** |
-| 腾讯 `qt.gtimg.cn` | 美股 | 157ms | 美东时间直给 | 3 位 | 校验源 |
-| 新浪 `hq.sinajs.cn` | 美股 | — | 北京秒级 | 4 位 | 兜底源 |
-| 纳斯达克官方 API | 指数成分 | — | — | — | 权重来源 |
-| Binance `ticker/24hr` | 币 | 毫秒级 | `closeTime` 毫秒 | 8 位 | **币主源** |
-| OKX `market/ticker` | 币 | — | `ts` 毫秒 | — | 币备源 |
-| CoinGecko | 币兜底 | — | 秒 | — | 兜底 |
+| 源 | 中位耗时 | 成功率 | 鉴权 | 时间戳 | 精度 | 定位 |
+|---|---|---|---|---|---|---|
+| 东财 `push2/ulist.np` | **48ms** | 8/8 | 无 | UTC 秒 `f86` | 2 位 | **主源** |
+| 腾讯 `qt.gtimg.cn` | 161ms | 8/8 | 无 | 美东时间直给 | 3 位 | **校验源** |
+| CNBC `restQuote` | 652ms | 8/8 | 无 | ISO 带偏移 | 2 位 | **权威源 / 市场状态** |
+| 新浪 `hq.sinajs.cn` | ~200ms | — | 无 | 北京秒级 | 4 位 | 兜底 |
+| 纳斯达克官方 API | — | — | 无（需 UA） | — | — | 权重来源 |
+| Alpaca Data API | — | 401（链路通） | 免费 key | — | — | 可选推流增强 |
+| Finnhub / Polygon / TwelveData | — | 401 / 401 / demo 可用 | key | — | — | 免费层限频过严，不采用 |
+
+### 2.2 选型结论
+
+- **速度与批量**：东财无可替代，48ms 拉 100 只，一次请求即可覆盖 NDX 全部成分。
+- **权威性与相位**：CNBC 是免费的意外之喜——`realTime: true`、`curmktstatus`（`REG_MKT`/`PRE_MKT`/`POST_MKT`/`CLOSED`）、`exthrs=1` 给盘前盘后价。相位判定改读这个字段，不再自行推算美东时区与冬夏令时。
+- **推流**：唯一免费路线是 Alpaca（IEX 实时 WebSocket，需注册免费 key）。权衡：IEX 仅占美股成交量 2–3%，价格可能偏离 consolidated tape 一两个分，属于**新增误差源**换实时感。默认关闭，作为可选开关。
+- **不采用的路线**：Kraken 等代币化美股（`AAPLXUSD` 报 `Unknown asset pair`，且链上价与 NMS 报价存在结构性偏离，不适合净值估算）；`slickcharts.com`（403）。
 
 已知坑：
 - `api.nasdaq.com` 不带浏览器 UA 直接 400。
-- `api.nasdaq.com/api/quote/list-type/sp500` 报 `code 1011 Bad or No parameter`，标普 500 全量需换源（候选：iShares IVV 持仓 CSV、screener 接口），实现前先做源探测。
-- `slickcharts.com` 返回 403，不可用。
+- `api.nasdaq.com/api/quote/list-type/sp500` 报 `code 1011 Bad or No parameter`，标普 500 全量需换源（候选：iShares IVV 持仓 CSV、screener 接口）。
+- CNBC 批量只认 `|` 分隔；用 `,` 会静默只返回第一条（不报错，最阴的坑）。
 - 东财 f 系列价格字段放大 1000 倍，涨跌幅放大 100 倍。
 
 ## 3. 架构
@@ -79,24 +87,37 @@
          SQLite (data/app.db)
 ```
 
-### 3.1 数据源适配层
+### 3.1 数据源适配层（五层梯队）
 
-统一接口，每个源声明自己的能力，由注册表择优：
+统一接口，每个源声明自己的能力，由注册表按职责调度：
 
 ```ts
 interface QuoteSource {
   id: string
-  assetClass: 'us_equity' | 'crypto'
-  maxBatch: number            // 单次批量上限
+  assetClass: 'us_equity'
+  maxBatch: number                    // 单次批量上限（东财 100 / CNBC 100+）
+  sep: string                         // 批量分隔符（CNBC 只认 '|'）
+  capabilities: ('quote' | 'marketStatus' | 'prepost' | 'stream')[]
   fetchQuotes(symbols): Promise<Quote[]>
-  normalize(raw): Quote       // 统一到 {symbol, price, prevClose, pct, tsMs, precision}
+  normalize(raw): Quote               // → {symbol, price, prevClose, pct, tsMs, precision, sourceId}
 }
 ```
 
-择优规则：
-1. 优先主源；连续 3 次失败或 p95 延迟 > 2s 时降级到备源，10 分钟后试探恢复。
-2. 主备同刻比价，同一 symbol 偏差 > 0.5% 则不写缓存，记 `source_conflict` 事件，UI 显示「行情源冲突，数据已冻结」。
-3. 所有行情写 `quote_cache` 时带 `source_id` 与 `ts_ms`，过期阈值：美股盘中 30 秒、收盘后 10 分钟、币 10 秒。
+梯队分工：
+
+| 层 | 源 | 职责 | 频率 |
+|---|---|---|---|
+| L1 | 东财 | 常规报价，全量成分一次性拉齐 | 盘中 5s / 收盘 10min |
+| L2 | 腾讯 | 交叉校验，字段最全（开高低、成交额） | 盘中每 60s 抽查 |
+| L3 | CNBC | 市场状态（相位）、盘前盘后价、权威复核 | 相位 5min / 全量复核 15min |
+| L4 | Alpaca（可选） | WebSocket 推流，需自备免费 key | 默认关闭 |
+| L5 | 新浪 | 兜底，前三层全挂时启用 | 按需 |
+
+调度规则：
+1. L1 连续 3 次失败或 p95 > 2s → 降级 L2，10 分钟后试探恢复。
+2. L1 与 L2 同刻比价，同一 symbol 偏差 > 0.5% → 触发 L3 裁决；L3 与 L1 一致则弃 L2，三方互斥则冻结该 symbol 并标 `source_conflict`，不写缓存。
+3. 写 `quote_cache` 必带 `source_id` 与 `ts_ms`；过期阈值盘中 30s、收盘 10min、`stale` 超 3 个周期未更新即前端显示快照时间。
+4. CNBC 批量的分隔符必须是 `|`，用 `,` 会静默只返回第一条——适配层需要断言「返回条数 == 请求条数」，否则视为失败。
 
 ### 3.2 数据获取链路
 
@@ -174,11 +195,13 @@ r_nav   = exposure · r_asset              // 剩余为现金，收益按 0 计
 
 | 相位 | 判定 | 含义 | 刷新 |
 |---|---|---|---|
-| `live` | 美东 09:30–16:00（含 04:00–09:30 盘前） | 正在形成的那一场，`r_nav` 是浮动值 | 30 秒 |
-| `settled` | 美东收盘后 | 昨夜已定，对应今夜将公布的净值 | 冻结，10 分钟校验一次 |
-| `stale` | 数据超过阈值未更新 | 显示快照时间，不冒充实时 | — |
+| `live` | CNBC `curmktstatus = REG_MKT` \| `PRE_MKT` | 正在形成的那一场，`r_nav` 是浮动值 | 5 秒（L1 轮询） |
+| `settled` | `curmktstatus = POST_MKT` \| `CLOSED` | 昨夜已定，对应今夜将公布的净值 | 冻结，10 分钟校验一次 |
+| `stale` | 行情超过阈值未更新 | 显示快照时间，不冒充实时 | — |
 
-时区用 `America/New_York` 实算，**不硬编码冬夏令时**（EST 22:30–05:00 vs EDT 21:30–04:00）。
+相位判定**优先读 CNBC 的 `curmktstatus` 字段**（免费、权威、自带盘前盘后语义），而不是自行推算美东时区——冬夏令时切换每年两次，硬编码必错。CNBC 不可用时降级为本地按 `America/New_York` 实算，这是兜底而非主路。
+
+盘前（`PRE_MKT`）的处理：美股盘前流动性薄，价格跳动大且不代表开盘价，因此盘前只展示「参考」，不更新 `settled` 已定的数值，避免 nightly 估值被盘前的噪音带偏。
 
 ### 3.6 校准闭环
 
@@ -250,4 +273,4 @@ GET  /api/calibration/:code     校准面板数据
 
 1. **标普 500 / 纳指科技（NDXT）全量成分源**：`api.nasdaq.com` 的 `list-type` 端点对 sp500 报参数错误。备选顺序：iShares IVV 持仓 CSV → nasdaq screener 接口 → 该指数仅用前十大并把 `coveredWeight` 如实标在 UI 上。**默认决策**：探测 3 次失败即降级，不为此无限试错。
 2. **历史日线接口**：标定需要成分股过去 60 个交易日的日涨跌序列，候选 `push2his.eastmoney.com/api/qt/stock/kline/get`。**默认决策**：东财不可用则用腾讯 `web.ifzq.gtimg.cn/appstock/app/usfqkline/get`；两者都不可用则只做前向标定（用实时快照逐日累积，首月内滚动校准）。
-3. **币圈定位**：**默认决策**——币圈只做行情与持仓收益展示（`asset_class = crypto` 独立分组），不参与 QDII 净值合成，避免资产类别耦合导致汇率与交易时段语义混乱。
+3. **是否启用 Alpaca 推流**：**默认决策**——默认关闭，只用 L1 轮询（48ms / 100 只，5 秒一次，用户感知已等同推流）。若要开启，需自备免费 key，并接受 IEX 单一交易所带来的额外价格偏离。`asset_class` 字段保留扩展位，第一版只落 `us_equity`。
