@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
  */
 interface Breakdown {
   symbol: string
+  /** 中文简称（东财 f14），缺失时是英文公司名 */
+  name: string
   weight: number
   pct: number
   contribution: number
@@ -472,7 +474,10 @@ export default function App() {
                         </div>
                         {f.breakdown.map((b) => (
                           <div className="brow" key={b.symbol}>
-                            <span>{b.symbol}</span>
+                            <span className="bname" title={`${b.name}（${b.symbol}）`}>
+                              {b.name}
+                              {b.name !== b.symbol && <em className="ticker">{b.symbol}</em>}
+                            </span>
                             <span className="num">{(b.weight * 100).toFixed(2)}%</span>
                             <span className={`num ${tone(b.pct)}`}>{pctText(b.pct)}</span>
                             <span className={`num ${tone(b.contribution)}`}>

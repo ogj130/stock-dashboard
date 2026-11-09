@@ -244,7 +244,10 @@ body {
 .list-head,
 .row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 68px 82px 76px;
+  /* 数字列从 68/82/76 压到 60/74/68：390px 下名称列原本只剩 80px，
+     真数据里 5 行全被截成「广发纳斯…」，A/C 份额肉眼分不出。
+     压缩后名称列约 114px，配合两行 clamp 可显示完整名称。 */
+  grid-template-columns: minmax(0, 1fr) 60px 74px 68px;
   column-gap: 6px;
   align-items: baseline;
 }
@@ -318,6 +321,13 @@ body {
 .c-name {
   font-weight: 550;
   font-size: 14px;
+  line-height: 1.3;
+  /* 基金名称本来就长（「广发纳斯达克100ETF联接C」14 字），
+     单行在手机上必然截断且 A/C 份额无法区分，所以放开两行 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* 主数字（金额）与次数字（百分比）分两级，眼睛先看金额再看比例 */
@@ -431,6 +441,25 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 中文名 + 灰字 ticker 并排；33.7% 的成分东财没有中文简称，
+   会退成英文公司名（最长 34 字符），必须靠 ellipsis 截断而不是撑破行 */
+.bname {
+  display: flex;
+  gap: 5px;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bname > em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 10px;
+  flex: 0 0 auto;
 }
 
 .bhead {
