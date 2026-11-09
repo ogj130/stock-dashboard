@@ -1,0 +1,223 @@
+/* ---------- 桌面小部件（?compact=1） ----------
+
+   目标：一个 320×220 的无边框置顶窗口，Swift 外壳把 isOpaque 关掉、WKWebView
+   设成透明，并且**不裁圆角**（OS 不会帮我们遮）。所以这里有三条硬约束：
+
+   1. html/body 必须 transparent —— 不透明就等于在桌面上贴一块死板的深色矩形；
+   2. 圆角由卡片自己画（16px），卡片正好铺满视口，四角之外什么都不许画
+      （外发光/外阴影一律不要，它们会画到圆角外面）；
+   3. overflow: hidden + 固定高度 —— 320×220 里出现滚动条是设计失败。
+
+   所有类名带 cc- 前缀；作用到 html/body 的规则只在 <html class="cc-mode">
+   下命中，所以主页面打开时这份样式完全不生效。
+*/
+
+html.cc-mode,
+html.cc-mode body {
+  background: transparent !important;
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  cursor: default;
+  /* 点一下不能留下蓝色选区：这个窗口不需要任何交互 */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html.cc-mode body {
+  /* styles.css 里给主页面留的 min-height:100vh 在 200px 高的窗口里会撑出滚动 */
+  min-height: 0;
+}
+
+.cc-card {
+  /*
+   * fixed + inset: 0 = 正好等于视口，且完全不受 #root 高度的影响。
+   * 用 height: 100% 会踩到这个坑：#root 没有高度，百分比高度解析成 auto，
+   * 卡片就退化成「内容多高就多高」，320×220 的窗口里只剩 178px 的面板。
+   */
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  padding: 11px 13px 9px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background:
+    radial-gradient(240px 150px at 100% 0%, rgba(96, 128, 255, 0.16), transparent 70%),
+    linear-gradient(165deg, rgba(32, 42, 64, 0.74) 0%, rgba(10, 15, 26, 0.8) 100%);
+  /* 只有内高光，没有外阴影：外阴影会照亮圆角之外的桌面 */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  /* 透明 WKWebView 里 backdrop-filter 拿不到桌面内容，但它让面板自身带一点
+     边缘柔化；不支持时只是退化成半透明渐变，不影响可读性 */
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* ---------- 数字区 ---------- */
+
+.cc-label {
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+}
+
+.cc-total {
+  margin-top: 1px;
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 650;
+  letter-spacing: -0.6px;
+  /* 数字等宽：5 秒一跳，字形宽度一变整行就会抖 */
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-delta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.cc-k {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.cc-delta .cc-v {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+}
+
+.cc-delta .cc-p {
+  font-size: 11px;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+/* 持有收益刻意更小更淡：它是存量，不该和 5 秒在跳的今日估算抢同一档视觉重量 */
+.cc-hold {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 1px;
+}
+
+.cc-hold .cc-v {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cc-note {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--warn);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 迷你曲线 ---------- */
+
+.cc-spark {
+  position: relative;
+  height: 52px;
+  margin: 3px 0 2px;
+  /* 默认是灰的：没有行情就没有涨跌，别给它红绿 */
+  color: var(--muted);
+}
+
+.cc-spark.up {
+  color: var(--up);
+}
+
+.cc-spark.down {
+  color: var(--down);
+}
+
+.cc-spark-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.cc-dot {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: currentColor;
+  /* 用面板底色打个薄薄的描边，圆点压在线上也不会糊成一团 */
+  box-shadow: 0 0 0 2px rgba(11, 16, 27, 0.55);
+}
+
+.cc-spark-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.7;
+  border-top: 1px solid var(--stroke-soft);
+  border-bottom: 1px solid var(--stroke-soft);
+}
+
+/* ---------- 脚注：相位 + 覆盖 + 时刻 ---------- */
+
+.cc-foot {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cc-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.cc-pip {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+/* 盘中才亮：置顶窗口常驻，不做呼吸动画——省 GPU，也别让余光被闪 */
+.cc-pip.on {
+  background: var(--up);
+  opacity: 1;
+  box-shadow: 0 0 0 2px rgba(255, 77, 79, 0.18);
+}
+
+.cc-blind {
+  flex: 0 0 auto;
+  color: var(--warn);
+  font-size: 9px;
+}
+
+.cc-clock {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--muted);
+}
