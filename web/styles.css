@@ -194,16 +194,78 @@ body {
   padding: 12px 16px 8px;
 }
 
+/**
+ * 表头：左边「标题 + 档位分段控件」，右边「窗口涨跌 + 窗口边界」竖排一簇。
+ * 390px 宽时放不下一行，右簇整体换到第二行靠右，而不是把涨跌数字压成「…」。
+ */
 .chart-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
+  row-gap: 4px;
+  flex-wrap: wrap;
+}
+
+/** 右簇：涨跌在上、窗口边界在下，两块都对齐右边缘 */
+.chart-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  margin-left: auto;
 }
 
 .chart-title {
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
+}
+
+/**
+ * 档位分段控件（今日 / 1时 / 6时 / 24时 / 7日）。
+ * 选中态沿用 .tab.on 的那套强调色：同一个页面里「被选中」只能有一种视觉语言。
+ * 未选中态压到比卡片描边还淡，视觉重量全部留给选中项。
+ */
+.chart-ranges {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke-soft);
+  background: var(--glass-2);
+}
+
+.chart-range {
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.chart-range.on {
+  color: var(--text);
+  font-weight: 600;
+  border-color: rgba(120, 160, 255, 0.45);
+  background: rgba(88, 130, 255, 0.18);
+}
+
+/** 窗口边界的副标题：比横轴再淡一点，它是注脚不是结论 */
+.chart-sub {
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.85;
+  letter-spacing: 0.2px;
   white-space: nowrap;
 }
 

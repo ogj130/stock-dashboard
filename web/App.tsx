@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import PortfolioChart, { type HistoryPoint } from './PortfolioChart'
+import PortfolioChart, {
+  DEFAULT_RANGE,
+  isRangeKey,
+  type HistoryResponse,
+  type RangeKey,
+} from './PortfolioChart'
 import { money, pctText, signedMoney, tone } from './format'
 
 /**
@@ -72,8 +77,21 @@ interface FundRowLite {
 
 const REFRESH_MS = 5000
 
-/** 折线图窗口。后端 /api/portfolio/history 支持 1~72 小时，这里固定 6 小时 */
-const HISTORY_HOURS = 6
+/**
+ * 折线图的档位选择存 localStorage：用户上一次点的是「7日」，刷新后应该还在 7日。
+ * 存的是档位键（不是下标），后端改顺序也不会读错档。
+ */
+const RANGE_STORAGE_KEY = 'pf-chart-range'
+
+function readStoredRange(): RangeKey {
+  try {
+    const stored = window.localStorage.getItem(RANGE_STORAGE_KEY)
+    return isRangeKey(stored) ? stored : DEFAULT_RANGE
+  } catch {
+    // 隐私模式/被禁用时 localStorage 会抛异常：档位退回默认，别让首屏白屏
+    return DEFAULT_RANGE
+  }
+}
 
 /**
  * 规则 1：覆盖率 0 时引擎仍会给出一个由汇率腿算出来的 navPct。
@@ -145,8 +163,13 @@ export default function App() {
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
   /** 'all' 或某个板块名 */
   const [tab, setTab] = useState<string>('all')
-  /** 服务端存的组合市值点（老 → 新）。刷新页面不会丢，因为点不在这儿的 state 里 */
-  const [history, setHistory] = useState<HistoryPoint[]>([])
+  /**
+   * 服务端存的组合市值点（老 → 新）+ 窗口边界。刷新页面不会丢，因为点不在这儿的 state 里；
+   * 连 startMs/endMs 一起存，横轴与副标题才有真实窗口可标注。
+   */
+  const [history, setHistory] = useState<HistoryResponse | null>(null)
+  /** 用户选中的档位。默认「今日」= 当天美股开盘到收盘 */
+  const [chartRange, setChartRange] = useState<RangeKey>(readStoredRange)
 
   const [code, setCode] = useState('')
   const [marketValue, setMarketValue] = useState('')
@@ -161,16 +184,14 @@ export default function App() {
         getJson<EstimateResponse>('/api/estimate'),
         getJson<{ funds: FundRowLite[] }>('/api/funds'),
         // 曲线失败不许拖垮估值：取不到就沿用上一轮的点，页面照常跳数字
-        getJson<{ points: HistoryPoint[] }>(`/api/portfolio/history?hours=${HISTORY_HOURS}`).catch(
-          () => null,
-        ),
+        getJson<HistoryResponse>(`/api/portfolio/history?range=${chartRange}`).catch(() => null),
       ])
       if (!aliveRef.current) return
       const map: Record<string, number> = {}
       for (const row of fundsRes.funds) map[row.code] = row.id
       setData(estimate)
       setIdsByCode(map)
-      if (hist) setHistory(hist.points)
+      if (hist) setHistory(hist)
       setError(null)
       setUpdatedAt(Date.now())
     } catch (err) {
@@ -179,17 +200,29 @@ export default function App() {
     } finally {
       if (aliveRef.current) setLoaded(true)
     }
-  }, [])
+    // chartRange 进依赖：换档位立刻重新取数，不用等下一个 5 秒 tick
+  }, [chartRange])
 
   useEffect(() => {
     aliveRef.current = true
     void load()
+    // load 的依赖里包含 chartRange：换档位时这个 effect 重跑 = 立刻取数 + 重置计时器
     const timer = setInterval(() => void load(), REFRESH_MS)
     return () => {
       aliveRef.current = false
       clearInterval(timer)
     }
   }, [load])
+
+  /** 换档位：写进 localStorage（下次刷新还是这一档），取数由上面的 effect 立刻触发 */
+  const changeRange = useCallback((next: RangeKey) => {
+    setChartRange(next)
+    try {
+      window.localStorage.setItem(RANGE_STORAGE_KEY, next)
+    } catch {
+      // 存不了就算了，当前这一档仍然有效
+    }
+  }, [])
 
   async function addFund(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -368,7 +401,9 @@ export default function App() {
         </header>
 
         {/* 直接贴在汇总卡下面：总资产怎么走到今天这个数的，一眼就能看见 */}
-        {funds.length > 0 && <PortfolioChart points={history} hours={HISTORY_HOURS} />}
+        {funds.length > 0 && (
+          <PortfolioChart range={chartRange} data={history} onRangeChange={changeRange} />
+        )}
 
         {error && (
           <div className="glass card error" role="alert">

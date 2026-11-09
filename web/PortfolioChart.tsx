@@ -17,6 +17,35 @@ export interface HistoryPoint {
   amount: number
 }
 
+/** 与后端 `src/store/portfolio.ts` 的 HistoryRange 一一对应（tests 里有类型同构断言） */
+export type RangeKey = 'session' | '1h' | '6h' | '24h' | '7d'
+
+export const RANGE_OPTIONS: ReadonlyArray<{ key: RangeKey; label: string }> = [
+  { key: 'session', label: '今日' },
+  { key: '1h', label: '1时' },
+  { key: '6h', label: '6时' },
+  { key: '24h', label: '24时' },
+  { key: '7d', label: '7日' },
+]
+
+export const DEFAULT_RANGE: RangeKey = 'session'
+
+export function isRangeKey(value: unknown): value is RangeKey {
+  return typeof value === 'string' && RANGE_OPTIONS.some((option) => option.key === value)
+}
+
+export function rangeLabel(range: RangeKey): string {
+  return RANGE_OPTIONS.find((option) => option.key === range)?.label ?? '今日'
+}
+
+/** 接口回包：range/startMs/endMs 是「窗口」的权威描述，前端不重复算交易日 */
+export interface HistoryResponse {
+  range: RangeKey
+  startMs: number
+  endMs: number
+  points: HistoryPoint[]
+}
+
 const VIEW_W = 1000
 const VIEW_H = 100
 
@@ -26,13 +55,76 @@ const VIEW_H = 100
  */
 const PAD = 14
 
-const HHMM = new Intl.DateTimeFormat('zh-CN', {
+/**
+ * 横轴与副标题的格式化器。
+ *
+ * `session` 必须用美东时间：窗口就是 09:30–16:00 美东，用本地时区读出来
+ * 在北京会是 22:30–05:00，看着像跨境夜盘。其余档位是滚动窗口，按本地时间读
+ * 才是用户脑子里的「最近 6 小时」。
+ */
+const ET_HHMM = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'America/New_York',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+})
+
+const LOCAL_HHMM = new Intl.DateTimeFormat('zh-CN', {
   hour: '2-digit',
   minute: '2-digit',
   hour12: false,
 })
 
+/**
+ * 本地日历日。不直接用 `zh-CN` 的 month/day 输出：它会渲染成 "11/09"，
+ * 而横轴约定的是 "11-09"；自己做零件拼装，就不必赌 locale 的分隔符。
+ */
+const LOCAL_DATE_PARTS = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+function localDateKey(atMs: number): string {
+  const parts = LOCAL_DATE_PARTS.formatToParts(new Date(atMs))
+  const pick = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? ''
+  return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+/** "11-09" */
+const localMonthDay = (atMs: number): string => localDateKey(atMs).slice(5)
+
 const round1 = (n: number): number => Math.round(n * 10) / 10
+
+/** 窗口是否跨了本地日历日：跨了才需要在横轴上带 MM-DD */
+function spansDays(startMs: number, endMs: number): boolean {
+  return localDateKey(startMs) !== localDateKey(endMs)
+}
+
+/**
+ * 横轴三档标签（起、中、止），跟着**真实窗口**走而不是跟着采样点走：
+ * 09:31 打开页面时只有一两个点，若按点取标签会全都挤在同一分钟里。
+ */
+export function axisLabels(range: RangeKey, startMs: number, endMs: number): string[] {
+  const stamps = [startMs, startMs + (endMs - startMs) / 2, endMs]
+  if (range === 'session') return stamps.map((ts) => ET_HHMM.format(new Date(ts)))
+  if (spansDays(startMs, endMs)) {
+    return stamps.map((ts) => `${localMonthDay(ts)} ${LOCAL_HHMM.format(new Date(ts))}`)
+  }
+  return stamps.map((ts) => LOCAL_HHMM.format(new Date(ts)))
+}
+
+/** 副标题：把窗口边界原样写出来，避免「这条线到底覆盖了什么」靠猜 */
+export function windowSubtitle(range: RangeKey, startMs: number, endMs: number): string {
+  if (range === 'session') {
+    return `美东 ${ET_HHMM.format(new Date(startMs))} – ${ET_HHMM.format(new Date(endMs))}`
+  }
+  if (spansDays(startMs, endMs)) {
+    return `${localMonthDay(startMs)} ${LOCAL_HHMM.format(new Date(startMs))} – ${localMonthDay(endMs)} ${LOCAL_HHMM.format(new Date(endMs))}`
+  }
+  return `本地 ${LOCAL_HHMM.format(new Date(startMs))} – ${LOCAL_HHMM.format(new Date(endMs))}`
+}
 
 export interface ChartGeometry {
   /** 折线路径；0 个点时为空串 */
@@ -112,46 +204,65 @@ export function buildGeometry(points: HistoryPoint[]): ChartGeometry {
 }
 
 interface PortfolioChartProps {
-  points: HistoryPoint[]
-  /** 窗口小时数：只用于文案，取数在后端按同一个值做 */
-  hours: number
+  /** 用户选中的档位（分段控件高亮用） */
+  range: RangeKey
+  /** 后端回包；首轮还没回来时为 null */
+  data: HistoryResponse | null
+  onRangeChange: (range: RangeKey) => void
 }
 
-export default function PortfolioChart({ points, hours }: PortfolioChartProps) {
+export default function PortfolioChart({ range, data, onRangeChange }: PortfolioChartProps) {
   const gradientId = `pf-grad-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
+  const points = data?.points ?? []
   const geo = buildGeometry(points)
   const n = points.length
   const first = points[0]
   const last = points[n - 1]
 
+  // 切换档位后新一轮数据还没到：文案跟着**已有数据**的窗口，不跟着按钮走，
+  // 否则会出现「标签写今日、线还是 7 日」的那种撒谎。
+  const shownRange = data?.range ?? range
+  const label = rangeLabel(shownRange)
+
   const delta = first && last ? last.value - first.value : 0
   const deltaPct = first && first.value > 0 ? (delta / first.value) * 100 : null
   const trend = tone(delta)
-  const windowText = `${hours}h`
 
   // 只有一个点时，窗口内没有「变化」可言：显示 — 比显示 0.00 诚实
   const deltaText =
     n < 2
-      ? `${windowText}  —`
-      : `${windowText}  ${signedMoney(delta)}${deltaPct === null ? '' : ` (${pctText(deltaPct)})`}`
+      ? `${label} —`
+      : `${label} ${signedMoney(delta)}${deltaPct === null ? '' : ` (${pctText(deltaPct)})`}`
 
-  const xLabels =
-    n === 0
-      ? []
-      : n === 1
-        ? [points[0]!.tsMs]
-        : [points[0]!.tsMs, points[Math.floor((n - 1) / 2)]!.tsMs, points[n - 1]!.tsMs]
+  const xLabels = data ? axisLabels(shownRange, data.startMs, data.endMs) : []
+  const subtitle = data ? windowSubtitle(shownRange, data.startMs, data.endMs) : '—'
 
-  const label =
+  const ariaLabel =
     n === 0
-      ? '总资产曲线暂无数据'
-      : `总资产 ${windowText} 走势，${money(geo.min)} 至 ${money(geo.max)}，最新 ${money(last?.value ?? 0)}`
+      ? `总资产曲线暂无数据（${label}）`
+      : `总资产 ${label} 走势（${subtitle}），${money(geo.min)} 至 ${money(geo.max)}，最新 ${money(last?.value ?? 0)}`
 
   return (
     <section className={`chart glass card ${trend}`} aria-label="总资产走势">
       <div className="chart-head">
         <span className="chart-title">总资产</span>
-        <span className={`chart-delta num ${trend}`}>{deltaText}</span>
+        <div className="chart-ranges" role="group" aria-label="时间范围">
+          {RANGE_OPTIONS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              className={`chart-range${option.key === range ? ' on' : ''}`}
+              aria-pressed={option.key === range}
+              onClick={() => onRangeChange(option.key)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <span className="chart-meta">
+          <span className={`chart-delta num ${trend}`}>{deltaText}</span>
+          <span className="chart-sub">{subtitle}</span>
+        </span>
       </div>
 
       {n === 0 ? (
@@ -164,7 +275,7 @@ export default function PortfolioChart({ points, hours }: PortfolioChartProps) {
               viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
               preserveAspectRatio="none"
               role="img"
-              aria-label={label}
+              aria-label={ariaLabel}
             >
               <defs>
                 <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -172,34 +283,42 @@ export default function PortfolioChart({ points, hours }: PortfolioChartProps) {
                   <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
                 </linearGradient>
               </defs>
-              {/* 最高点那条淡网格线：让「涨到哪儿了」有个参照 */}
-              <line
-                className="chart-grid"
-                x1={0}
-                y1={geo.gridY}
-                x2={VIEW_W}
-                y2={geo.gridY}
-                vectorEffect="non-scaling-stroke"
-              />
-              <path className="chart-area" d={geo.area} fill={`url(#${gradientId})`} />
-              <path
-                className="chart-line"
-                d={geo.line}
-                fill="none"
-                strokeWidth={1.5}
-                vectorEffect="non-scaling-stroke"
-              />
+              {/* 一个点画不出趋势：只留那个圆点，别用一条贯穿的平线假装有曲线 */}
+              {n >= 2 && (
+                <>
+                  <line
+                    className="chart-grid"
+                    x1={0}
+                    y1={geo.gridY}
+                    x2={VIEW_W}
+                    y2={geo.gridY}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <path className="chart-area" d={geo.area} fill={`url(#${gradientId})`} />
+                  <path
+                    className="chart-line"
+                    d={geo.line}
+                    fill="none"
+                    strokeWidth={1.5}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </>
+              )}
             </svg>
 
             {/* 标签放在曲线「外侧」：max 标签悬在最高点之上、min 标签沉在最低点之下，
                 这样无论涨还是跌都不会被自己的曲线压住 */}
-            <span className="chart-y max num" style={{ top: `${geo.yMaxPct}%` }}>
-              {money(geo.max)}
-            </span>
-            {!geo.flat && (
-              <span className="chart-y min num" style={{ top: `${geo.yMinPct}%` }}>
-                {money(geo.min)}
-              </span>
+            {n >= 2 && (
+              <>
+                <span className="chart-y max num" style={{ top: `${geo.yMaxPct}%` }}>
+                  {money(geo.max)}
+                </span>
+                {!geo.flat && (
+                  <span className="chart-y min num" style={{ top: `${geo.yMinPct}%` }}>
+                    {money(geo.min)}
+                  </span>
+                )}
+              </>
             )}
             <span
               className="chart-dot"
@@ -209,9 +328,9 @@ export default function PortfolioChart({ points, hours }: PortfolioChartProps) {
           </div>
 
           <div className="chart-xaxis">
-            {xLabels.map((ts) => (
-              <span className="num" key={ts}>
-                {HHMM.format(new Date(ts))}
+            {xLabels.map((text, i) => (
+              <span className="num" key={`${i}-${text}`}>
+                {text}
               </span>
             ))}
           </div>
