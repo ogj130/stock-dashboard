@@ -348,7 +348,7 @@ function logEstimates(
 }
 
 /** index_key → 大盘行情里的指数代码，用于取官方涨跌幅 */
-const INDEX_SYMBOL: Record<string, string> = { ndx: 'NDX', sp500: 'SPX' }
+const INDEX_SYMBOL: Record<string, string> = { ndx: 'NDX100', sp500: 'SPX' }
 
 /**
  * 指数基金直接用官方指数涨跌，不再自算成分加权。

@@ -10,8 +10,13 @@ const UA =
  *
  * 一次 ulist 拿全，不逐条问：这是界面的锦上添花，请求数越少越好；
  * secid 顺序就是界面展示顺序（1=沪、0=深，100=美股指数）。
+ *
+ * ⚠️ 必须是 `100.NDX100`，不是 `100.NDX`！东财的 `100.NDX` 名称显示「纳斯达克」，
+ * 实际是**纳斯达克综合指数**（与新浪 gb_$ixic 完全一致），而国内 QDII 跟踪的是
+ * 纳斯达克 100。实测同一时刻两者差 0.59pp（综合 +2.63% vs NDX100 +3.22%），
+ * 用错会让所有纳指基金的估值系统性偏低。
  */
-export const MARKET_INDEX_SECIDS = ['1.000001', '0.399001', '100.NDX', '100.SPX'] as const
+export const MARKET_INDEX_SECIDS = ['1.000001', '0.399001', '100.NDX100', '100.SPX'] as const
 
 export interface MarketIndex {
   /** 报文里的 f12，如 '000001' / 'NDX' */
