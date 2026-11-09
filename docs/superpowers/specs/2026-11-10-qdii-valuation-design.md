@@ -71,13 +71,13 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Web UI (React + Vite, 暗色玻璃拟态)          │
+│  Web UI (React + Vite, 暗色玻璃拟态, 5s 轮询)  │
 │  账户汇总 / 基金列表 / 持仓明细 / 误差面板      │
 └───────────────┬─────────────────────────────┘
-                │ HTTP JSON + SSE（推送刷新）
+                │ HTTP JSON（前端 5 秒轮询）
 ┌───────────────▼─────────────────────────────┐
 │  Fastify (Node 24 + TypeScript)              │
-│  ├─ routes/    funds, quotes, estimate, sync │
+│  ├─ routes/    funds, estimate               │
 │  ├─ engine/    估值核心（纯函数，可单测）      │
 │  ├─ sources/   数据源适配层（主备 + 校验）     │
 │  ├─ sync/      定时任务：抓持仓 / 抓行情 / 标定 │
@@ -227,7 +227,6 @@ POST /api/funds                 新增（code, marketValue, profit）
 PATCH /api/funds/:id            改份额/成本
 DELETE /api/funds/:id
 GET  /api/funds/:id/breakdown   持仓明细与贡献
-GET  /api/quotes/stream         SSE 行情推送
 POST /api/sync/holdings         强制刷新持仓快照
 GET  /api/calibration/:code     校准面板数据
 ```
@@ -262,7 +261,7 @@ GET  /api/calibration/:code     校准面板数据
 
 1. **M1 数据通**：源适配层 + 持仓解析 + 行情批量，跑通 3 只基金拿真实数字。
 2. **M2 算得对**：估值核心 + 历史标定 + 回测脚本，产出 MAE 报告。
-3. **M3 看得见**：Web UI 三块 + SSE 刷新。
+3. **M3 看得见**：Web UI 三块 + 5 秒轮询刷新（单用户自用场景 SSE 属过度设计）。
 4. **M4 闭环**：残留校准 + 误差面板 + 降级路径。
 
 每个里程碑都要有可复核的证据（脚本输出、MAE 数字），不接受「应该没问题」。
@@ -273,4 +272,4 @@ GET  /api/calibration/:code     校准面板数据
 
 1. **标普 500 / 纳指科技（NDXT）全量成分源**：`api.nasdaq.com` 的 `list-type` 端点对 sp500 报参数错误。备选顺序：iShares IVV 持仓 CSV → nasdaq screener 接口 → 该指数仅用前十大并把 `coveredWeight` 如实标在 UI 上。**默认决策**：探测 3 次失败即降级，不为此无限试错。
 2. **历史日线接口**：标定需要成分股过去 60 个交易日的日涨跌序列，候选 `push2his.eastmoney.com/api/qt/stock/kline/get`。**默认决策**：东财不可用则用腾讯 `web.ifzq.gtimg.cn/appstock/app/usfqkline/get`；两者都不可用则只做前向标定（用实时快照逐日累积，首月内滚动校准）。
-3. **是否启用 Alpaca 推流**：**默认决策**——默认关闭，只用 L1 轮询（48ms / 100 只，5 秒一次，用户感知已等同推流）。若要开启，需自备免费 key，并接受 IEX 单一交易所带来的额外价格偏离。`asset_class` 字段保留扩展位，第一版只落 `us_equity`。
+3. **Alpaca 推流：已决——不上。** 理由：东财 48ms / 5 秒轮询在感知上等同推流，且 IEX 单一交易所会引入 2–3% 成交量样本带来的价格偏离，净收益为负。代码中保留 `AlpacaStreamSource` 适配器骨架（`capabilities: ['stream']`，默认不注册），将来想开只需填入 key 与一行配置。`asset_class` 字段保留扩展位，第一版只落 `us_equity`。
