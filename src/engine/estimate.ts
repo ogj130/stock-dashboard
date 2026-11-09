@@ -28,7 +28,12 @@ export function estimateNav(input: EstimateInput): EstimateResult {
   // 权重可能 < 1（只覆盖前十大）也可能 > 1（脏数据），两头都夹住
   const wCov = Math.min(1, Math.max(0, totalWeight))
   const wUnc = Math.max(0, 1 - wCov)
-  const rUnc = residualPct ?? 0
+  // 未披露部分怎么算，是主动型 QDII 误差的最大来源。
+  // 按 0 计等于假设「另一半资产当天不动」——实测建信新兴市场：已披露 8 只加权 +3.86%，
+  // 覆盖率 47%，按 0 外推后估值只有 1.7%，明显低估。
+  // 正确假设：未披露的持仓与已披露的同属一个组合，涨跌幅度相近，
+  // 所以默认用已覆盖部分的加权涨跌外推（调用方给了 residualPct 就以它为准）。
+  const rUnc = residualPct ?? weighted
   // 有官方指数涨跌就直接用它：自算成分加权与官方口径差 0.2pp 量级，
   // 对这只基金来说那是 MAE 预算的 1.4 倍，没必要自己近似一遍
   const rStock = input.indexPct !== undefined ? input.indexPct : wCov * weighted + wUnc * rUnc

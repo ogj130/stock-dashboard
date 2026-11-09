@@ -25,9 +25,20 @@ describe('estimateNav', () => {
     expect(r.navPct).toBeCloseTo(0.6 * 2 + 0.4 * 1, 6)
   })
 
-  it('未给残差代理时，未覆盖部分按 0 计', () => {
+  it('未给残差代理时，未覆盖部分按已覆盖的加权涨跌外推', () => {
+    // 覆盖 60%、涨 2%。未覆盖的 40% 不该按 0 计（那等于假设另一半资产当天不动），
+    // 而应假设它与已披露部分同属一个组合、涨跌相近 → 整体仍是 2%
     const r = estimateNav({ ...base, holdings: [{ symbol: 'A', name: 'A', weight: 0.6, pct: 2 }] })
-    expect(r.navPct).toBeCloseTo(1.2, 6)
+    expect(r.navPct).toBeCloseTo(2, 6)
+  })
+
+  it('显式给出 residualPct 时以它为准', () => {
+    const r = estimateNav({
+      ...base,
+      holdings: [{ symbol: 'A', name: 'A', weight: 0.6, pct: 2 }],
+      residualPct: 5,
+    })
+    expect(r.navPct).toBeCloseTo(0.6 * 2 + 0.4 * 5, 6)
   })
 
   it('汇率升值抵消股票涨幅', () => {

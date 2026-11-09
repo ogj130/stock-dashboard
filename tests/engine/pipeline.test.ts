@@ -47,7 +47,9 @@ describe('buildEstimate', () => {
       holdings, quotes: partial, fxNow: 7, fxPrev: 7, exposure: 1, lagDays: 1, phase: 'live',
     })
     expect(r.coveredWeight).toBeCloseTo(0.6, 6)
-    expect(r.navPct).toBeCloseTo(6, 6)          // 0.6 覆盖部分全涨 10% → 归一后 10%，未覆盖按 0 → 6
+    // 覆盖的 60% 涨 10%；未覆盖的 40% 按已覆盖的涨幅外推（也按 10%），
+    // 所以整体仍是 10% —— 而不是旧逻辑的 6%（那等于假设缺行情的那只当天不动）
+    expect(r.navPct).toBeCloseTo(10, 6)
     expect(r.missing).toEqual(['MSFT'])
     // 未覆盖的票不能出现在明细里：明细是"实际参与计算的部分"
     expect(r.breakdown.map((b) => b.symbol)).toEqual(['AAPL'])
