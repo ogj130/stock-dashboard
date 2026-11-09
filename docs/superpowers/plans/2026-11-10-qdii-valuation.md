@@ -1145,10 +1145,8 @@ export class MarketMap {
   private cache = new Map<string, number>()
 
   constructor(private db: Db, private probe: MarketProbe) {
-    this.db.exec(
-      `create table if not exists quote_symbol_market (
-         symbol text primary key, market integer not null, updated_at integer not null)`,
-    )
+    // 表由 store/db 的迁移建好（v1 含 quote_symbol_market），这里不再 create table：
+    // 自建表会绕过版本化迁移，是 schema 漂移的源头。
     const rows = this.db.prepare('select symbol, market from quote_symbol_market').all() as Array<{
       symbol: string
       market: number
@@ -2310,7 +2308,10 @@ import type { Db } from './db'
 export interface FundRow {
   id: number; code: string; name: string; kind: string
   target_etf_code: string | null; index_key: string | null
+  asset_class: string
   shares: number; cost_basis: number; exposure: number; lag_days: number
+  calibrated_at: number | null      // 未校准为 null，UI 据此打灰标
+  created_at: number
 }
 
 export function insertFund(
@@ -2318,10 +2319,11 @@ export function insertFund(
   input: { code: string; name?: string; shares: number; costBasis: number; exposure?: number; lagDays?: number },
 ): FundRow {
   db.prepare(
-    `insert into fund (code, name, shares, cost_basis, exposure, lag_days)
-     values (?,?,?,?,?,?)
-     on conflict(code) do update set shares=excluded.shares, cost_basis=excluded.cost_basis`,
-  ).run(input.code, input.name ?? '', input.shares, input.costBasis, input.exposure ?? 0.95, input.lagDays ?? 1)
+    `insert into fund (code, name, shares, cost_basis, exposure, lag_days, created_at)
+     values (?,?,?,?,?,?,?)
+     on conflict(code) do update set
+       shares=excluded.shares, cost_basis=excluded.cost_basis, name=excluded.name`,
+  ).run(input.code, input.name ?? '', input.shares, input.costBasis, input.exposure ?? 0.95, input.lagDays ?? 1, Date.now())
   return db.prepare('select * from fund where code = ?').get(input.code) as unknown as FundRow
 }
 
@@ -2330,10 +2332,12 @@ export function listFunds(db: Db): FundRow[] {
 }
 
 export function upsertNav(db: Db, code: string, date: string, nav: number, pct: number): void {
+  // 用 do update 而非 do nothing：官方有时会重述净值，而 nav_history.pct 是校准的地面真值
   db.prepare(
-    `insert into nav_history (fund_code, nav_date, nav, pct) values (?,?,?,?)
-     on conflict(fund_code, nav_date) do update set nav=excluded.nav, pct=excluded.pct`,
-  ).run(code, date, nav, pct)
+    `insert into nav_history (fund_code, nav_date, nav, pct, fetched_at) values (?,?,?,?,?)
+     on conflict(fund_code, nav_date) do update set
+       nav=excluded.nav, pct=excluded.pct, fetched_at=excluded.fetched_at`,
+  ).run(code, date, nav, pct, Date.now())
 }
 
 export function getNavHistory(db: Db, code: string, limit = 90): Array<{ nav_date: string; pct: number }> {
@@ -2674,8 +2678,46 @@ export function registerEstimateRoutes(app: FastifyInstance, ctx: Ctx): void {
         phase,
       }),
     )
+    logEstimates(ctx.db, phase, estimates, etDate())
     return { funds: estimates }
   })
+}
+
+/** 美东当地日期 YYYY-MM-DD，作为这条估算指向的净值日 */
+function etDate(now: Date = new Date()): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  })
+  return fmt.format(now)   // en-CA 天然给出 YYYY-MM-DD
+}
+
+/**
+ * 每次估值留痕，供日后对账。没有这张表，校准闭环就没有原料。
+ * target_nav_date 记录这条估算指向哪个净值日——这是让 reconcile 能选对行的关键。
+ */
+function logEstimates(db: Db, phase: string, estimates: FundEstimate[], targetNavDate: string): void {
+  const stmt = db.prepare(
+    `insert into estimate_log
+       (fund_code, model_ts, target_nav_date, phase, model_pct, model_amount, covered_weight, lag_days, exposure)
+     values (?,?,?,?,?,?,?,?,?)`,
+  )
+  const now = Date.now()
+  const params = db.prepare('select lag_days, exposure from fund where code = ?')
+  db.exec('begin')
+  try {
+    for (const e of estimates) {
+      const p = params.get(e.code) as { lag_days: number; exposure: number } | undefined
+      stmt.run(
+        e.code, now, targetNavDate, phase, e.navPct, e.amount, e.coveredWeight,
+        p?.lag_days ?? 1, p?.exposure ?? 0.95,
+      )
+    }
+    db.exec('commit')
+  } catch (err) {
+    db.exec('rollback')
+    throw err
+  }
 }
 
 function latestNavOf(db: Db, code: string): number {
@@ -3156,14 +3198,16 @@ export function reconcile(db: Db, fundCode: string): { navDate: string; modelPct
     .get(fundCode) as { nav_date: string; pct: number } | undefined
   if (!nav) return null
 
-  // estimate_log.model_ts 是毫秒时间戳，取该净值日当天及之后最早的一条
-  const dayStart = Date.parse(`${nav.nav_date}T00:00:00+08:00`)
+  // 必须按 target_nav_date + phase='settled' 取，取该日「最晚」的一条。
+  // 曾经用 model_ts >= 当日零点 order by asc 取"第一条"，那会取到盘中的 live 估算，
+  // 实测与收盘估算相差 0.41pp —— 是 MAE 预算（0.15pp）的 2.7 倍，会污染整个校准。
   const est = db
     .prepare(
-      `select model_pct from estimate_log where fund_code = ? and model_ts >= ?
-       order by model_ts asc limit 1`,
+      `select model_pct from estimate_log
+       where fund_code = ? and target_nav_date = ? and phase = 'settled'
+       order by model_ts desc limit 1`,
     )
-    .get(fundCode, dayStart) as { model_pct: number } | undefined
+    .get(fundCode, nav.nav_date) as { model_pct: number } | undefined
   if (!est) return null
 
   recordResidual(db, {
@@ -3184,8 +3228,10 @@ it('净值与估值能对上账，算出残差', async () => {
   db.prepare('insert into nav_history (fund_code, nav_date, nav, pct) values (?,?,?,?)')
     .run('270042', '2026-11-06', 7.3714, 1.36)
   db.prepare(
-    'insert into estimate_log (fund_code, model_ts, phase, model_pct, model_amount, covered_weight, constituents_json, lag_days, exposure) values (?,?,?,?,?,?,?,?,?)',
-  ).run('270042', Date.parse('2026-11-06T20:00:00+08:00'), 'settled', 1.41, 0, 0.66, '[]', 1, 0.95)
+    `insert into estimate_log
+       (fund_code, model_ts, target_nav_date, phase, model_pct, model_amount, covered_weight, lag_days, exposure)
+     values (?,?,?,?,?,?,?,?,?)`,
+  ).run('270042', Date.parse('2026-11-06T20:00:00+08:00'), '2026-11-06', 'settled', 1.41, 0, 0.66, 1, 0.95)
 
   const r = reconcile(db, '270042')
   expect(r?.modelPct).toBeCloseTo(1.41, 2)
@@ -3195,6 +3241,24 @@ it('净值与估值能对上账，算出残差', async () => {
 ```
 
 > 注意 `import { reconcile }` 要加进测试文件的 import 行。
+
+再补一条防回归测试——这条正是审查报告里 0.41pp 错误的护栏：
+
+```ts
+it('同一净值日只有 live 估算时不入账，绝不拿盘中值当收盘值', async () => {
+  const db = openDb(':memory:')
+  db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
+  db.prepare('insert into nav_history (fund_code, nav_date, nav, pct, fetched_at) values (?,?,?,?,?)')
+    .run('X', '2026-11-06', 7.3, 1.36, 1)
+  db.prepare(
+    `insert into estimate_log
+       (fund_code, model_ts, target_nav_date, phase, model_pct, model_amount, covered_weight, lag_days, exposure)
+     values (?,?,?,?,?,?,?,?,?)`,
+  ).run('X', Date.now(), '2026-11-06', 'live', 1.0, 0, 0.66, 1, 0.95)
+
+  expect(reconcile(db, 'X')).toBeNull()
+})
+```
 
 - [ ] **Step 5: 运行测试确认通过**
 
