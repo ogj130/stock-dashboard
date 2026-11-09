@@ -1820,15 +1820,73 @@ export function isPreMarket(status: MarketStatus): boolean {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: 补本地兜底（CNBC 不可用或状态缺失时用，不默认 CLOSED）**
+
+实测发现：CNBC 返回异常时 `normalizeStatus` 会把缺失状态静默变成 `'CLOSED'`。相位判成"已收盘"会让界面冻结一个其实还在跳的数字，比报错更危险。所以需要一条显式兜底路径。
+
+追加到 `src/engine/phase.ts`：
+
+```ts
+/**
+ * 本地时区兜底：仅在 CNBC 状态不可用时使用。
+ * 用 Intl 拿美东当地时间，避免手写冬夏令时规则。
+ */
+export function derivePhaseLocal(now: Date = new Date()): MarketStatus {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    weekday: 'short',
+  })
+  const parts = fmt.formatToParts(now)
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+  const weekday = get('weekday')
+  const hour = Number(get('hour'))
+  const minute = Number(get('minute'))
+  const mins = (hour % 24) * 60 + minute
+
+  if (weekday === 'Sat' || weekday === 'Sun') return 'CLOSED'
+  if (mins >= 4 * 60 && mins < 9 * 60 + 30) return 'PRE_MKT'
+  if (mins >= 9 * 60 + 30 && mins < 16 * 60) return 'REG_MKT'
+  if (mins >= 16 * 60 && mins < 20 * 60) return 'POST_MKT'
+  return 'CLOSED'
+}
+```
+
+测试追加到 `tests/engine/phase.test.ts`：
+
+```ts
+describe('derivePhaseLocal', () => {
+  // 2026-11-09 是周一，美东为 EST(-05:00)
+  it('美东周一 10:00 是盘中', () => {
+    expect(derivePhaseLocal(new Date('2026-11-09T15:00:00Z'))).toBe('REG_MKT')
+  })
+  it('美东周一 05:00 是盘前', () => {
+    expect(derivePhaseLocal(new Date('2026-11-09T10:00:00Z'))).toBe('PRE_MKT')
+  })
+  it('美东周一 02:00 是闭市', () => {
+    expect(derivePhaseLocal(new Date('2026-11-09T07:00:00Z'))).toBe('CLOSED')
+  })
+  it('周六永远闭市', () => {
+    expect(derivePhaseLocal(new Date('2026-11-07T15:00:00Z'))).toBe('CLOSED')
+  })
+  it('夏令时切换后仍按美东当地钟点判定', () => {
+    // 2026-07-06 周一，EDT(-04:00)：13:00Z = 09:00 美东，属盘前
+    expect(derivePhaseLocal(new Date('2026-07-06T13:00:00Z'))).toBe('PRE_MKT')
+  })
+})
+```
+
+- [ ] **Step 5: 运行测试确认通过**
 
 Run: `pnpm vitest run tests/engine/phase.test.ts`
-Expected: PASS 3 passed
+Expected: PASS 8 passed
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-git add -A && git commit -m "feat(engine): 相位判定"
+git add -A && git commit -m "feat(engine): 相位判定与本地时区兜底"
 ```
 
 ---
@@ -2535,6 +2593,7 @@ import { TencentSource } from './sources/tencent'
 import { CnbcSource } from './sources/cnbc'
 import { SinaSource } from './sources/sina'
 import { registerEstimateRoutes } from './routes/estimate'
+import { derivePhaseLocal } from './engine/phase'
 
 const cnbc = new CnbcSource()
 const registry = new QuoteRegistry([
@@ -2547,7 +2606,14 @@ const registry = new QuoteRegistry([
 registerEstimateRoutes(app, {
   db,
   registry,
-  status: async () => (await cnbc.fetchMarketStatus()).status,
+  // CNBC 拿不到状态时退回本地美东时钟，不默认 CLOSED（会把盘中误判成已收盘）
+  status: async () => {
+    try {
+      return (await cnbc.fetchMarketStatus()).status
+    } catch {
+      return derivePhaseLocal(new Date())
+    }
+  },
 })
 ```
 
