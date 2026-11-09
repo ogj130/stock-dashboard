@@ -37,7 +37,8 @@ body {
 .page {
   max-width: 560px;
   margin: 0 auto;
-  padding: 24px 16px calc(28px + env(safe-area-inset-bottom));
+  /* 底部指数条是 fixed 的：这里必须让出它的高度（+ 刘海屏安全区），否则最后一行永远压在条子下面 */
+  padding: 24px 16px calc(72px + env(safe-area-inset-bottom));
   display: grid;
   gap: 14px;
 }
@@ -81,6 +82,16 @@ body {
   font-size: 13px;
 }
 
+/* 分 tab 时把「这笔钱是哪一类的」写在资产旁边，避免把子集当成全部资产 */
+.summary .label .scope {
+  color: var(--text);
+  opacity: 0.75;
+}
+
+.summary .delta .small {
+  font-size: 12px;
+}
+
 .summary .amount {
   font-size: 34px;
   font-weight: 650;
@@ -92,9 +103,18 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 8px;
+  /* 两组数据之间不用「·」：390px 折行时它会变成第一行末尾的孤儿 */
+  gap: 2px 16px;
   margin-top: 4px;
   font-size: 14px;
+}
+
+/* 标签和它的数字不许被拆开：390px 上 "持有收益 +22,527.71 +20.44%" 会折出孤儿行 */
+.summary .delta .delta-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .summary .phase {
@@ -163,10 +183,101 @@ body {
   }
 }
 
+/* ---------- 分板块 tab ---------- */
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  /* 板块多到放不下时横向滚动，而不是把整页撑宽 */
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 2px 0;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: var(--glass-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab.on {
+  color: var(--text);
+  font-weight: 600;
+  border-color: rgba(120, 160, 255, 0.45);
+  background: rgba(88, 130, 255, 0.18);
+}
+
+.tab-count {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.tab.on .tab-count {
+  opacity: 0.9;
+}
+
 /* ---------- 列表 ---------- */
 
 .list {
   padding: 4px 6px;
+}
+
+/**
+ * 三列数字必须和表头严丝合缝：表头与行用同一套列宽、同一套左右内边距，
+ * 任何一边改了另一边就会错位。68/82/76 是按「+12646.36」「纳斯达克100」这类
+ * 最长内容定的，改宽之前先量。
+ */
+.list-head,
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 68px 82px 76px;
+  column-gap: 6px;
+  align-items: baseline;
+}
+
+.list-head {
+  padding: 8px 10px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sort {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sort.on {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.sort .arrow {
+  font-size: 10px;
+  opacity: 0.85;
 }
 
 .fund + .fund .row {
@@ -175,11 +286,8 @@ body {
 
 .row {
   width: 100%;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 10px;
+  row-gap: 3px;
+  padding: 12px 10px;
   margin: 0;
   border: 0;
   border-radius: 14px;
@@ -199,45 +307,69 @@ body {
   outline-offset: -2px;
 }
 
-.row-main {
-  display: grid;
-  gap: 3px;
+/* 每格都可能被 80px 宽的名字列挤压：一律允许收缩 + 省略号，绝不让文字撑破网格 */
+.cell {
   min-width: 0;
-}
-
-.row .name {
-  font-weight: 550;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.row .meta {
+.c-name {
+  font-weight: 550;
+  font-size: 14px;
+}
+
+/* 主数字（金额）与次数字（百分比）分两级，眼睛先看金额再看比例 */
+.c-amount,
+.c-hold {
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.c-board {
+  text-align: right;
+  font-size: 13px;
+  font-weight: 550;
+  letter-spacing: -0.2px;
+}
+
+.c-navpct,
+.c-holdpct {
+  text-align: right;
+  font-size: 11px;
+}
+
+.c-boardname {
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 第二行的代码/市值：允许折行，它不像数字列那样必须单行 */
+.c-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 10px;
+  gap: 1px 4px;
+  font-size: 11px;
   color: var(--muted);
-  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-.row .right {
-  display: grid;
-  justify-items: end;
-  gap: 2px;
-  flex: none;
+.c-meta .sep {
+  opacity: 0.45;
 }
 
-.row .right .amount {
-  font-weight: 600;
-  font-size: 15px;
+.c-meta .meta-amount {
+  white-space: nowrap;
 }
 
-.row .right .small {
-  font-size: 12px;
-}
-
-/* 三条规则的可视化载体 */
+/* 三条规则的可视化载体：单独占一整行，390px 下才有地方放它们 */
 .chips {
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -410,6 +542,66 @@ body {
   font-size: 13px;
   padding: 12px 16px;
   word-break: break-all;
+}
+
+/* ---------- 底部指数条 ---------- */
+
+/**
+ * 固定在视口底部（参考 App 的大盘行情条）：4 个指数在 390px 上放不下，
+ * 所以内部横向滚动，页面本身不许被撑宽——overflow-x 只开在这一层。
+ */
+.market {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: rgba(10, 14, 24, 0.97);
+  border-top: 1px solid var(--stroke);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.market-track {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.market-track::-webkit-scrollbar {
+  display: none;
+}
+
+.mkt {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.mkt-name {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mkt-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mkt-change,
+.mkt-pct {
+  font-size: 11px;
 }
 
 @media (max-width: 380px) {

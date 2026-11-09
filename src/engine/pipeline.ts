@@ -19,6 +19,8 @@ export interface BuildInput {
   excludedHk?: number
   /** 权重来源：指数全量成分（≈100% 覆盖）/ 基金披露的前十大（40~70%）/ 无持仓 */
   weightsFrom?: 'index' | 'top10' | 'none'
+  /** 关联板块（跟踪指数的中文名，如「纳斯达克100」）；null 表示没配 index_key */
+  board?: string | null
 }
 
 export interface FundEstimate {
@@ -37,6 +39,8 @@ export interface FundEstimate {
   holdingsCount: number
   lagDays: number
   weightsFrom: 'index' | 'top10' | 'none'
+  /** 关联板块：跟踪指数的中文名，界面用它分 tab、也对它去匹配指数涨跌幅 */
+  board: string | null
   /** 让界面能说"含港股 N 只，已排除" */
   excluded: { hk: number }
   missing: string[]
@@ -83,6 +87,7 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     holdingsCount: available.length,
     lagDays: input.lagDays,
     weightsFrom: input.weightsFrom ?? (holdings.length > 0 ? 'top10' : 'none'),
+    board: input.board ?? null,
     excluded: { hk: input.excludedHk ?? 0 },
     missing,
     breakdown: result.breakdown,

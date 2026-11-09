@@ -7,6 +7,7 @@ import { derivePhase } from '../engine/phase'
 import { fetchPosition, resolveHoldingsFrom } from '../fund/holdings'
 import { fetchIndexWeights } from '../fund/indexWeight'
 import { fetchUsdCny, fetchUsdCnyFallback, loadCachedFx, saveFx, type FxRate } from '../sources/fx'
+import { createMarketIndicesCache, type MarketIndex } from '../sources/marketIndices'
 import { listFunds, upsertNav, type FundRow } from '../store/queries'
 import { CONFIG } from '../config'
 
@@ -34,6 +35,23 @@ export interface EstimateDeps {
   resolveFx?: () => Promise<FxRate | null>
   loadHoldings?: (fund: FundRow) => Promise<{ holdings: Holding[]; weightsFrom: FundEstimate['weightsFrom'] }>
   latestNav?: (code: string) => Promise<number>
+  /** 底部指数条。默认 30 秒缓存 + 东财；测试按需注入，保持完全离线 */
+  marketIndices?: () => Promise<MarketIndex[]>
+}
+
+/**
+ * index_key → 关联板块名。前端分 tab、匹配指数涨跌幅都靠这个字符串，
+ * 所以它必须是给人看的中文名（而不是 'ndx' 这种内部码）；未配置就是 null，
+ * 界面据此显示「—」并把它归进「全部」。
+ */
+const BOARD_BY_INDEX_KEY: Record<string, string> = {
+  ndx: '纳斯达克100',
+  sp500: '标普500',
+}
+
+export function boardOf(indexKey: string | null): string | null {
+  if (!indexKey) return null
+  return BOARD_BY_INDEX_KEY[indexKey] ?? null
 }
 
 interface FundHoldingSet {
@@ -51,6 +69,8 @@ export interface EstimateResponse {
   targetNavDate: string
   /** 汇率腿的实况；null 表示取不到且无历史可用 */
   fx: { pair: string; rate: number; prevClose: number; pct: number; sourceId: string; tsMs: number } | null
+  /** 底部指数条；取不到就是空数组（绝不因为这条锦上添花的腿把估值弄成 500） */
+  marketIndices: MarketIndex[]
 }
 
 export function registerEstimateRoutes(
@@ -61,16 +81,22 @@ export function registerEstimateRoutes(
   const loadHoldings = deps.loadHoldings ?? defaultLoadHoldings
   const latestNav = deps.latestNav ?? ((code: string) => resolveNav(ctx.db, code))
   const resolveFx = deps.resolveFx ?? (() => resolveFxRate(ctx.db))
+  const fetchIndices = deps.marketIndices ?? createMarketIndicesCache()
 
   app.get('/api/estimate', async (): Promise<EstimateResponse> => {
     const funds = listFunds(ctx.db)
     const targetNavDate = etDate()
 
-    // 状态拿不到时由 server 注入的 status 退回本地时钟推导，不在这里默认 CLOSED：
-    // 把盘中误判成收盘会让界面冻结一个本该跳动的数字
-    const status = await ctx.status().catch(() => 'CLOSED' as MarketStatus)
+    // 两个背景信息并行取，谁也不拖累谁：
+    // - 状态拿不到时由 server 注入的 status 退回本地时钟推导，不在这里默认 CLOSED，
+    //   把盘中误判成收盘会让界面冻结一个本该跳动的数字；
+    // - 指数条与基金列表无关（空仓时也该显示），失败在 getMarketIndicesSafely 里吞掉。
+    const [status, marketIndices] = await Promise.all([
+      ctx.status().catch(() => 'CLOSED' as MarketStatus),
+      getMarketIndicesSafely(app, fetchIndices),
+    ])
     const phase = derivePhase(status)
-    if (funds.length === 0) return { funds: [], phase, targetNavDate, fx: null }
+    if (funds.length === 0) return { funds: [], phase, targetNavDate, fx: null, marketIndices }
 
     const [fx, resolved] = await Promise.all([
       resolveFx(),
@@ -111,6 +137,7 @@ export function registerEstimateRoutes(
         phase,
         excludedHk: r.excludedHk,
         weightsFrom: r.weightsFrom,
+        board: boardOf(r.fund.index_key),
       }),
     )
 
@@ -139,8 +166,25 @@ export function registerEstimateRoutes(
             tsMs: fx.tsMs,
           }
         : null,
+      marketIndices,
     }
   })
+}
+
+/**
+ * 指数条是锦上添花：取不到就返回空数组并记一条 warn，绝不影响基金估值。
+ * 界面拿到空数组就不渲染那一条，比显示一条假点位诚实。
+ */
+async function getMarketIndicesSafely(
+  app: FastifyInstance,
+  fetchIndices: () => Promise<MarketIndex[]>,
+): Promise<MarketIndex[]> {
+  try {
+    return await fetchIndices()
+  } catch (err) {
+    app.log.warn({ err }, 'market indices unavailable; bottom strip hidden')
+    return []
+  }
 }
 
 /**
