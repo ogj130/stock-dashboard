@@ -148,34 +148,94 @@ git add -A && git commit -m "chore: 项目骨架与工具链"
 
 ### Task 2: 数据库 schema 与迁移
 
+> **本任务已按 Task 2 审查报告的 BLOCKER 结论重做（2026-11-10）**，与初版不同之处都写在注释里，不要按旧版写。
+
 **Files:**
 - Create: `src/store/db.ts`, `src/config.ts`
 - Test: `tests/store/db.test.ts`
+
+**设计判决（后续 17 个任务依赖这些约定，不得擅自偏离）：**
+1. **迁移必须版本化**：`create table if not exists` 对已存在的库是静默 no-op，加列会悄悄失效、直到运行时崩。用 `pragma user_version` + 有序迁移 + 事务。
+2. **`estimate_log` 必须记 `target_nav_date`**：否则对账时无法判断某条估算属于哪个净值日，"取该日第一条"会取到盘中的 live 估算而非收盘的 settled，实测误差 0.41pp。
+3. **时间戳统一用 integer epoch 毫秒**（`*_ms` / `created_at` / `fetched_at` / `calibrated_at`），日期字段（`nav_date` / `as_of`）用 `YYYY-MM-DD` 文本。不混用 ISO 文本。
+4. **单位写进 CHECK 约束**：`weight` 是 0~1 小数（不是百分数）。数据源给的是 `7.6`（百分数），入库前必须 `/100`——没有约束的话这个失误是静默的 100 倍错误。
+5. **外键要级联**：删掉一只基金，它的净值、残差、估算记录必须一起走，否则重新录入会继承旧的残差进 60 日 MAE 窗口。
 
 - [ ] **Step 1: 写失败测试**
 
 ```ts
 // tests/store/db.test.ts
 import { describe, it, expect } from 'vitest'
-import { openDb, migrate } from '../../src/store/db'
+import { mkdtempSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { openDb, migrate, SCHEMA_VERSION } from '../../src/store/db'
 
-describe('db', () => {
-  it('建表后六张表都存在', () => {
+const TABLES = [
+  'constituent', 'estimate_log', 'fund', 'fx_cache',
+  'nav_history', 'quote_cache', 'quote_symbol_market', 'residual',
+]
+
+describe('db schema', () => {
+  it('建出全部 8 张表', () => {
     const db = openDb(':memory:')
     const names = db
-      .prepare("select name from sqlite_master where type='table' order by name")
+      .prepare("select name from sqlite_master where type='table' and name not like 'sqlite_%'")
       .all()
-      .map((r: any) => r.name)
-    expect(names).toEqual(
-      expect.arrayContaining([
-        'fund', 'constituent', 'quote_cache', 'fx_cache', 'nav_history', 'estimate_log', 'residual',
-      ]),
-    )
+      .map((r: any) => r.name as string)
+      .sort()
+    expect(names).toEqual(TABLES)
   })
 
-  it('重复建表不报错（幂等迁移）', () => {
+  it('user_version 记录迁移版本', () => {
+    const db = openDb(':memory:')
+    const row = db.prepare('pragma user_version').get() as { user_version: number }
+    expect(row.user_version).toBe(SCHEMA_VERSION)
+  })
+
+  it('重复迁移幂等，版本不变', () => {
     const db = openDb(':memory:')
     expect(() => migrate(db)).not.toThrow()
+    expect(() => migrate(db)).not.toThrow()
+    const row = db.prepare('pragma user_version').get() as { user_version: number }
+    expect(row.user_version).toBe(SCHEMA_VERSION)
+  })
+
+  it('文件模式下 WAL 生效，且自动建出父目录', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stockmy-'))
+    const path = join(dir, 'nested', 'app.db')
+    const db = openDb(path)
+    expect(existsSync(path)).toBe(true)
+    const mode = db.prepare('pragma journal_mode').get() as { journal_mode: string }
+    expect(mode.journal_mode).toBe('wal')
+  })
+
+  it('删基金连带删净值与残差（外键级联）', () => {
+    const db = openDb(':memory:')
+    db.prepare("insert into fund (code, created_at) values ('X', 1)").run()
+    db.prepare("insert into nav_history (fund_code, nav_date, nav, pct, fetched_at) values ('X','2026-11-06',7.3,1.2,1)").run()
+    db.prepare("insert into residual (fund_code, nav_date, model_pct, actual_pct, diff, nav_ts) values ('X','2026-11-06',1.1,1.2,-0.1,1)").run()
+    db.prepare("delete from fund where code = 'X'").run()
+    expect((db.prepare('select count(*) c from nav_history').get() as any).c).toBe(0)
+    expect((db.prepare('select count(*) c from residual').get() as any).c).toBe(0)
+  })
+
+  it('CHECK 拦住把百分数当小数写进 weight', () => {
+    const db = openDb(':memory:')
+    const stmt = db.prepare(
+      `insert into constituent (owner_type, owner_key, symbol, weight, as_of, source, fetched_at)
+       values ('index','ndx','AAPL',?,?,?,1)`,
+    )
+    expect(() => stmt.run(7.6, '2026-09-30', 'test')).toThrow(/CHECK/i)
+    expect(() => stmt.run(0.076, '2026-09-30', 'test')).not.toThrow()
+  })
+
+  it('CHECK 拦住非法的 lag_days 与 exposure', () => {
+    const db = openDb(':memory:')
+    const stmt = db.prepare('insert into fund (code, lag_days, exposure, created_at) values (?,?,?,1)')
+    expect(() => stmt.run('A', 5, 0.95)).toThrow(/CHECK/i)
+    expect(() => stmt.run('B', 1, 9)).toThrow(/CHECK/i)
+    expect(() => stmt.run('C', 1, 0.95)).not.toThrow()
   })
 })
 ```
@@ -183,7 +243,7 @@ describe('db', () => {
 - [ ] **Step 2: 运行确认失败**
 
 Run: `pnpm vitest run tests/store/db.test.ts`
-Expected: FAIL — `Cannot find module '../../src/store/db'`
+Expected: FAIL — 模块不存在或 `SCHEMA_VERSION` 未导出
 
 - [ ] **Step 3: 写 `src/config.ts`**
 
@@ -206,117 +266,159 @@ export const CONFIG = {
 ```ts
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 export type Db = DatabaseSync
 
-const SCHEMA = `
-create table if not exists fund (
-  id integer primary key autoincrement,
-  code text not null unique,
-  name text not null default '',
-  kind text not null default 'index',
-  target_etf_code text,
-  index_key text,
-  asset_class text not null default 'us_equity',
-  shares real not null default 0,
-  cost_basis real not null default 0,
-  exposure real not null default 0.95,
-  lag_days integer not null default 1,
-  calibrated_at text,
-  created_at text not null default (datetime('now'))
-);
+/**
+ * 有序迁移。每一项是「从版本 N 升到 N+1」的增量。
+ * 永远不要改已发布的迁移——新增列就追加新的一项。
+ * 用 create table if not exists 初始化已有库是静默 no-op，所以必须靠版本号驱动。
+ */
+const MIGRATIONS: Array<(db: Db) => void> = [
+  // v1：初始 schema
+  (db) => {
+    db.exec(`
+      create table fund (
+        id integer primary key autoincrement,
+        code text not null unique,
+        name text not null default '',
+        kind text not null default 'index',
+        target_etf_code text,
+        index_key text,
+        asset_class text not null default 'us_equity',
+        shares real not null default 0 check (shares >= 0),
+        cost_basis real not null default 0,
+        exposure real not null default 0.95 check (exposure between 0 and 1.5),
+        lag_days integer not null default 1 check (lag_days in (0, 1, 2)),
+        calibrated_at integer,
+        created_at integer not null
+      );
 
-create table if not exists constituent (
-  id integer primary key autoincrement,
-  owner_type text not null,
-  owner_key text not null,
-  symbol text not null,
-  name text not null default '',
-  weight real not null,
-  as_of text not null,
-  source text not null,
-  unique(owner_type, owner_key, symbol, as_of)
-);
+      create table constituent (
+        id integer primary key autoincrement,
+        owner_type text not null,
+        owner_key text not null,
+        symbol text not null,
+        name text not null default '',
+        weight real not null check (weight >= 0 and weight <= 1),
+        as_of text not null,
+        source text not null,
+        fetched_at integer not null,
+        unique(owner_type, owner_key, symbol, as_of)
+      );
+      create index idx_constituent_latest on constituent(owner_type, owner_key, as_of desc);
 
-create table if not exists quote_cache (
-  symbol text not null,
-  asset_class text not null default 'us_equity',
-  price real not null,
-  prev_close real not null,
-  pct real not null,
-  ts_ms integer not null,
-  source_id text not null,
-  fetched_at integer not null,
-  primary key (symbol, source_id)
-);
+      create table quote_cache (
+        symbol text not null,
+        asset_class text not null default 'us_equity',
+        price real not null check (price >= 0),
+        prev_close real not null check (prev_close >= 0),
+        pct real not null check (pct between -1000 and 1000),
+        precision integer not null default 2,
+        ts_ms integer not null,
+        source_id text not null,
+        fetched_at integer not null,
+        primary key (symbol, source_id)
+      );
 
-create table if not exists fx_cache (
-  pair text not null,
-  rate real not null,
-  ts_ms integer not null,
-  source_id text not null,
-  primary key (pair, source_id)
-);
+      create table fx_cache (
+        pair text not null,
+        rate real not null check (rate > 0),
+        prev_close real not null check (prev_close > 0),
+        ts_ms integer not null,
+        source_id text not null,
+        fetched_at integer not null,
+        primary key (pair, source_id)
+      );
 
-create table if not exists nav_history (
-  fund_code text not null,
-  nav_date text not null,
-  nav real not null,
-  pct real not null,
-  primary key (fund_code, nav_date)
-);
+      create table nav_history (
+        fund_code text not null references fund(code) on delete cascade,
+        nav_date text not null,
+        nav real not null check (nav > 0),
+        pct real not null,
+        fetched_at integer not null,
+        primary key (fund_code, nav_date)
+      );
 
-create table if not exists estimate_log (
-  id integer primary key autoincrement,
-  fund_code text not null,
-  model_ts integer not null,
-  phase text not null,
-  model_pct real not null,
-  model_amount real not null default 0,
-  covered_weight real not null,
-  constituents_json text not null,
-  lag_days integer not null,
-  exposure real not null
-);
+      create table estimate_log (
+        id integer primary key autoincrement,
+        fund_code text not null references fund(code) on delete cascade,
+        model_ts integer not null,
+        target_nav_date text not null,
+        phase text not null check (phase in ('live', 'settled')),
+        model_pct real not null,
+        model_amount real not null default 0,
+        covered_weight real not null check (covered_weight >= 0 and covered_weight <= 1),
+        lag_days integer not null,
+        exposure real not null
+      );
+      create index idx_estimate_lookup on estimate_log(fund_code, target_nav_date, phase);
+      create index idx_estimate_ts on estimate_log(model_ts);
 
-create table if not exists residual (
-  id integer primary key autoincrement,
-  fund_code text not null,
-  nav_date text not null,
-  model_pct real not null,
-  actual_pct real not null,
-  diff real not null,
-  nav_ts integer not null,
-  unique(fund_code, nav_date)
-);
+      create table residual (
+        id integer primary key autoincrement,
+        fund_code text not null references fund(code) on delete cascade,
+        nav_date text not null,
+        model_pct real not null,
+        actual_pct real not null,
+        diff real not null,
+        nav_ts integer not null,
+        unique(fund_code, nav_date)
+      );
 
-create index if not exists idx_constituent_owner on constituent(owner_type, owner_key);
-create index if not exists idx_estimate_fund_ts on estimate_log(fund_code, model_ts);
-`
+      create table quote_symbol_market (
+        symbol text primary key,
+        market integer not null,
+        updated_at integer not null
+      );
+    `)
+  },
+]
+
+export const SCHEMA_VERSION = MIGRATIONS.length
 
 export function migrate(db: Db): void {
-  db.exec(SCHEMA)
+  const row = db.prepare('pragma user_version').get() as { user_version: number }
+  const current = row.user_version
+  for (let v = current; v < MIGRATIONS.length; v++) {
+    db.exec('begin')
+    try {
+      MIGRATIONS[v]!(db)
+      db.exec(`pragma user_version = ${v + 1}`)
+      db.exec('commit')
+    } catch (e) {
+      db.exec('rollback')
+      throw e
+    }
+  }
 }
 
 export function openDb(path: string): Db {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+  const isMemory = path === ':memory:'
+  if (!isMemory) mkdirSync(dirname(resolve(path)), { recursive: true })
   const db = new DatabaseSync(path)
+  db.exec('pragma busy_timeout = 5000')
+  db.exec('pragma foreign_keys = on')
   db.exec('pragma journal_mode = wal')
   migrate(db)
   return db
 }
 ```
 
+> 说明：`pragma journal_mode = wal` 在 `:memory:` 上会静默退化为 `memory`，SQLite 不支持内存库 WAL，这是正常行为，不要去断言它。文件模式下的 WAL 由 Step 1 的测试覆盖。
+
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `pnpm vitest run tests/store/db.test.ts`
-Expected: PASS 2 passed
+Expected: PASS 7 passed
+
+> 若第 7 条「CHECK 拦住非法 lag_days」失败：确认 `lag_days` 的 CHECK 写在列定义上（SQLite 的 CHECK 在超限时抛 `SQLITE_CONSTRAINT_CHECK`，错误信息含 "CHECK"）。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git add -A && git commit -m "feat(store): sqlite schema 与幂等迁移"
+git add -A && git commit -m "feat(store): 版本化迁移与加固的 sqlite schema"
 ```
 
 ---
@@ -2639,6 +2741,22 @@ git add -A && git commit -m "feat(engine): 估算编排、汇率与估值路由"
 **Files:**
 - Create: `web/index.html`, `web/main.tsx`, `web/App.tsx`, `web/styles.css`, `vite.config.ts`
 
+- [ ] **Step 0: 补 Vite 类型声明，并把 vite.config.ts 纳入类型检查**
+
+Task 1 审查实测：`tsconfig.json` 的 `types` 只钉了 `["node","vitest/globals"]`，没有 `vite/client`，因此 `web/main.tsx` 里的 `import './styles.css'` 会报 `TS2882`、`import.meta.env` 会报 `TS2339`，`pnpm typecheck` 直接失败。另外 `vite.config.ts` 不在 `include` 里，改坏了也不会被发现。
+
+新建 `web/vite-env.d.ts`：
+
+```ts
+/// <reference types="vite/client" />
+```
+
+修改 `tsconfig.json` 的 `include`，追加 `"vite.config.ts"`：
+
+```json
+"include": ["src", "web", "scripts", "tests", "vitest.config.ts", "vite.config.ts"]
+```
+
 - [ ] **Step 1: 写 `vite.config.ts`**
 
 ```ts
@@ -2838,8 +2956,8 @@ body {
 
 - [ ] **Step 5: 启动验证界面可打开**
 
-Run: `pnpm dev &` 然后 `pnpm dev:web`
-Expected: Vite 打印本地地址；打开后深色页面。若已录入基金，能看到账户汇总、列表、点开展开持仓明细与每只股票贡献（`pp` 单位）。
+Run: `pnpm typecheck && pnpm dev &` 然后 `pnpm dev:web`
+Expected: `pnpm typecheck` **exit 0**（这条是新增门禁：它会真正编译 `web/` 下的 tsx 与 `vite.config.ts`，CSS 导入和 `import.meta.env` 都在这一步被验证）；Vite 打印本地地址；打开后深色页面。若已录入基金，能看到账户汇总、列表、点开展开持仓明细与每只股票贡献（`pp` 单位）。
 
 - [ ] **Step 6: 提交**
 
@@ -3095,13 +3213,19 @@ git add -A && git commit -m "feat(sync): 净值抓取、残差入账与对账闭
 
 全部任务完成后逐条核对，每条都要有可复核的输出：
 
-- [ ] `pnpm test` 全绿，`pnpm typecheck` 零错误
+- [ ] `pnpm test` 全绿，`pnpm typecheck` 零错误（**包含 web/ 与 vite.config.ts**，不是只查 src/）
 - [ ] `npx tsx scripts/backtest.ts 270042` 输出 MAE < 0.15pp
 - [ ] `npx tsx scripts/probe.ts` 三项均有明确结论，且已写回设计文档第 7 节
 - [ ] 界面上能录入一只基金，看到实时估算金额与百分比
 - [ ] 点开某只基金能看到持仓明细与每只股票的贡献
 - [ ] 相位标签在美股收盘后变成「待公布」，且数值冻结不再跳动
 - [ ] 净值公布后 `residual` 表出现新行，「模型今日偏差」有值
+
+## 工具链已知限制（Task 1 审查实测，接受不修）
+
+- **TypeScript 7.0.2 是原生移植版**：`tsc` 是 JS shim，实际调用 `@typescript/typescript-darwin-arm64` 这个 optionalDependency 二进制。它**不提供 compiler API 也不带 tsserver**，所以后续不要引入依赖 TS API 的工具（ESLint + @typescript-eslint、ts-node、API Extractor、vite-plugin-dts 都会失败），VS Code 也无法使用工作区 TS 版本。构建与 `pnpm typecheck` 不受影响。用 `--no-optional` 安装会直接坏掉。
+- **`lib` 里有 DOM**：服务端代码里误用 `localStorage`、`document`、`window` 能通过类型检查、到运行时才崩。自用项目接受这个权衡；不为此拆双 tsconfig。
+- **vitest `include` 只匹配 `tests/**/*.test.ts`**：将来若写 `.test.tsx` 组件测试，它不会被执行而门禁仍显绿。真要加的时候记得同步改 include。
 
 ## 已知未覆盖（明确不做）
 
