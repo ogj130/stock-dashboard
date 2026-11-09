@@ -47,6 +47,7 @@ export function estimateNav(input: EstimateInput): EstimateResult {
         ? holdings
             .map((h) => ({
               symbol: h.symbol,
+              name: h.name,
               weight: h.weight,
               pct: h.pct,
               contribution: (h.weight / totalWeight) * h.pct * wCov * exposure,

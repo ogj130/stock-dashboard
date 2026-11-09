@@ -4,6 +4,8 @@ export type AssetClass = 'us_equity'
 
 export interface Quote {
   symbol: string
+  /** 数据源给的本地化名称（东财的 f14 是中文名，如「苹果」「英伟达」）。腾讯/CNBC 只有英文 */
+  name?: string
   price: number
   prevClose: number
   pct: number          // 当日涨跌幅，百分数（2.31 表示 +2.31%）
@@ -39,5 +41,5 @@ export interface EstimateResult {
   fxPct: number
   navPct: number
   coveredWeight: number
-  breakdown: Array<{ symbol: string; weight: number; pct: number; contribution: number }>
+  breakdown: Array<{ symbol: string; name: string; weight: number; pct: number; contribution: number }>
 }

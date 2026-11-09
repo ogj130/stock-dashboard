@@ -44,7 +44,7 @@ export interface FundEstimate {
   /** 让界面能说"含港股 N 只，已排除" */
   excluded: { hk: number }
   missing: string[]
-  breakdown: Array<{ symbol: string; weight: number; pct: number; contribution: number }>
+  breakdown: Array<{ symbol: string; name: string; weight: number; pct: number; contribution: number }>
 }
 
 /**
@@ -63,7 +63,11 @@ export function buildEstimate(input: BuildInput): FundEstimate {
   const missing = holdings.filter((h) => !quotes.has(h.symbol)).map((h) => h.symbol)
 
   const result = estimateNav({
-    holdings: available.map((h) => ({ ...h, pct: quotes.get(h.symbol)!.pct })),
+    // 名称优先级：行情源的中文名（东财 f14）> 指数报文的英文公司名 > ticker
+    holdings: available.map((h) => {
+      const q = quotes.get(h.symbol)!
+      return { ...h, name: q.name?.trim() || h.name || h.symbol, pct: q.pct }
+    }),
     fxNow: input.fxNow,
     fxPrev: input.fxPrev,
     exposure: input.exposure,

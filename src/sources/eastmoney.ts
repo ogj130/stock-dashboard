@@ -38,11 +38,14 @@ export function normalizeEastmoney(raw: EmResponse): Quote[] {
   const rows = raw.data?.diff ?? []
   const out: Quote[] = []
   for (const r of rows) {
-    const { f2, f3, f12, f18 } = r
+    const { f2, f3, f12, f14, f18 } = r
     if (!f12 || typeof f2 !== 'number' || typeof f18 !== 'number' || typeof f3 !== 'number') continue
     if (!Number.isFinite(f2) || !Number.isFinite(f18) || !Number.isFinite(f3)) continue
     out.push({
       symbol: f12,
+      // f14 是中文简称（「英伟达」「苹果」），界面读起来比 ticker 顺；
+      // 腾讯/CNBC 不提供，pipeline 会退回指数报文的英文公司名
+      name: typeof f14 === 'string' && f14.trim() ? f14.trim() : undefined,
       price: f2 / 1000,
       prevClose: f18 / 1000,
       pct: f3 / 100,
