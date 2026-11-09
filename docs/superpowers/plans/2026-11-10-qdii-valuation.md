@@ -2476,7 +2476,7 @@ import { registerFundRoutes } from '../../src/routes/funds'
 import { openDb } from '../../src/store/db'
 
 const noNetwork = {
-  latestNav: async () => 7.3714,
+  latestNav: async () => ({ nav: 7.3714, name: '广发纳斯达克100ETF联接人民币(QDII)A' }),
   resolveHoldings: async () => ({ holdings: [], viaEtf: null, asOf: '2026-09-30' }),
 }
 
@@ -2572,7 +2572,7 @@ interface AddBody {
 
 /** 依赖注入：默认走真实网络，单测传入桩函数即可离线运行 */
 export interface FundRouteDeps {
-  latestNav?: (code: string) => Promise<number>
+  latestNav?: (code: string) => Promise<{ nav: number; name: string }>
   resolveHoldings?: (code: string) => Promise<ResolvedHoldings>
 }
 
@@ -2589,11 +2589,11 @@ export function registerFundRoutes(app: FastifyInstance, db: Db, deps: FundRoute
     if (!code) return reply.code(400).send({ error: 'code required' })
 
     // 未直接给份额时，用「市值 + 持有收益」反推，避免用户填长表单
-    const nav = await getNav(code)
+    const { nav, name } = await getNav(code)
     const s = shares ?? (nav > 0 ? marketValue / nav : 0)
     const c = costBasis ?? Math.max(0, marketValue - profit)
 
-    const fund = insertFund(db, { code, shares: s, costBasis: c })
+    const fund = insertFund(db, { code, name, shares: s, costBasis: c })
     if (indexKey) {
       db.prepare('update fund set index_key = ? where code = ?').run(indexKey, code)
     }
@@ -2607,16 +2607,21 @@ export function registerFundRoutes(app: FastifyInstance, db: Db, deps: FundRoute
   })
 }
 
-async function latestNav(code: string): Promise<number> {
+/**
+ * 同一个接口既给净值也给基金名称（SHORTNAME），顺手一起取回来落库——
+ * 否则界面只能显示代码（POST 的 AddBody 不收 name）。
+ */
+async function latestNav(code: string): Promise<{ nav: number; name: string }> {
   const url =
     `https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?pageIndex=1&pageSize=1` +
     `&plat=Android&appType=ttjj&product=EFund&Version=1&deviceid=1&Fcodes=${code}`
   try {
     const res = await fetch(url)
     const body = (await res.json()) as any
-    return Number(body?.Datas?.[0]?.NAV ?? 0)
+    const row = body?.Datas?.[0]
+    return { nav: Number(row?.NAV ?? 0), name: String(row?.SHORTNAME ?? '') }
   } catch {
-    return 0
+    return { nav: 0, name: '' }
   }
 }
 ```
