@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { openDb, type Db } from '../../src/store/db'
 import {
   HISTORY_MAX_POINTS,
+  SNAPSHOT_THROTTLE_MS,
   etWallClock,
   etWallClockToUtcMs,
+  listWindow,
   parseRange,
   rangeFromHours,
   readHistory,
+  recordSnapshot,
   sessionWindow,
 } from '../../src/store/portfolio'
 
@@ -228,5 +231,70 @@ describe('readHistory · 各档位的窗口与抽样', () => {
     seed(db, stamps)
     const out = readHistory(db, '6h', now)
     expect(out.points.map((p) => p.tsMs)).toEqual(stamps)
+  })
+})
+
+/**
+ * 写入侧的三个指标必须一起落库：曲线可以在「总资产 / 当日收益 / 持有收益」之间
+ * 即时切换，靠的就是同一行里三列都有值——缺一列就得回头再查一次库。
+ */
+describe('recordSnapshot · 三个指标一起落库', () => {
+  interface Row {
+    total_value: number
+    total_amount: number
+    total_profit: number
+    fund_count: number
+  }
+
+  it('value/amount/profit 各进各的列，并能被 listWindow 原样读出', () => {
+    const db = openDb(':memory:')
+    const now = et(2026, 11, 9, 10, 0)
+    const wrote = recordSnapshot(
+      db,
+      { value: 100_000, amount: -120.5, profit: 15_907.66, fundCount: 2 },
+      now,
+    )
+    expect(wrote).toBe(true)
+
+    const row = db
+      .prepare('select total_value, total_amount, total_profit, fund_count from portfolio_snapshot')
+      .get() as unknown as Row
+    expect(row.total_value).toBeCloseTo(100_000, 6)
+    expect(row.total_amount).toBeCloseTo(-120.5, 6)
+    expect(row.total_profit).toBeCloseTo(15_907.66, 6)
+    expect(row.fund_count).toBe(2)
+
+    const points = listWindow(db, { startMs: now - MIN, endMs: now + MIN })
+    expect(points).toEqual([{ tsMs: now, value: 100_000, amount: -120.5, profit: 15_907.66 }])
+  })
+
+  it('持有收益可以是负数（浮亏），不被 default/约束吃掉', () => {
+    const db = openDb(':memory:')
+    const now = et(2026, 11, 9, 10, 0)
+    recordSnapshot(db, { value: 80_000, amount: 30, profit: -4_321.09, fundCount: 1 }, now)
+    const points = listWindow(db, { startMs: now - MIN, endMs: now + MIN })
+    expect(points[0]!.profit).toBeCloseTo(-4_321.09, 6)
+  })
+
+  it('30 秒内的第二跳被节流跳过（返回 false，不写行，也不改上一行）', () => {
+    const db = openDb(':memory:')
+    const now = et(2026, 11, 9, 10, 0)
+    recordSnapshot(db, { value: 100_000, amount: 1, profit: 500, fundCount: 2 }, now)
+    const skipped = recordSnapshot(
+      db,
+      { value: 999_999, amount: 9, profit: 9_999, fundCount: 2 },
+      now + SNAPSHOT_THROTTLE_MS - 1,
+    )
+    expect(skipped).toBe(false)
+    const rows = db.prepare('select total_value, total_profit from portfolio_snapshot').all() as unknown as Row[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.total_value).toBeCloseTo(100_000, 6)
+    expect(rows[0]!.total_profit).toBeCloseTo(500, 6)
+
+    // 过了一个节流窗口就可以写下一行
+    expect(
+      recordSnapshot(db, { value: 101_000, amount: 2, profit: 600, fundCount: 2 }, now + SNAPSHOT_THROTTLE_MS),
+    ).toBe(true)
+    expect((db.prepare('select count(*) c from portfolio_snapshot').get() as { c: number }).c).toBe(2)
   })
 })

@@ -370,7 +370,10 @@ function recordSnapshotSafely(
   try {
     const value = estimates.reduce((sum, e) => sum + e.marketValue, 0)
     const amount = estimates.reduce((sum, e) => sum + e.amount, 0)
-    recordSnapshot(db, { value, amount, fundCount: estimates.length })
+    // 持有收益是「存量」：市值减成本，累计口径，和当日估算收益(amount)不是一回事。
+    // 空仓/成本未填时自然为 0，曲线在新指标下就是一条贴零的直线，如实反映没记录。
+    const profit = estimates.reduce((sum, e) => sum + (e.marketValue - e.costBasis), 0)
+    recordSnapshot(db, { value, amount, profit, fundCount: estimates.length })
   } catch (err) {
     app.log.warn({ err }, 'portfolio snapshot skipped')
   }

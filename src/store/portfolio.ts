@@ -39,8 +39,12 @@ const RANGE_SPAN_MS: Record<Exclude<HistoryRange, 'session'>, number> = {
 
 export interface PortfolioPoint {
   tsMs: number
+  /** 总市值（存量，恒为正） */
   value: number
+  /** 当日估算收益（流量，可为负） */
   amount: number
+  /** 累计持有收益 Σ(市值 − 成本)（可为负；v5 之前的历史行是 0） */
+  profit: number
 }
 
 export interface HistoryWindow {
@@ -255,10 +259,16 @@ export function sessionWindow(db: Db, now: number = Date.now()): HistoryWindow {
 
 /* ---------- 读 ---------- */
 
-/** 落一行快照。返回 false 表示被节流跳过（不是失败）。 */
+/**
+ * 落一行快照。返回 false 表示被节流跳过（不是失败）。
+ *
+ * `profit` 是累计持有收益（Σ 市值 − 成本），与 `amount`（当日估算收益）
+ * 是两条完全不同的腿：前者是存量、随时间只增不减地累积，后者每天归零重算。
+ * 曲线要能切换着看，所以两个都得落库。
+ */
 export function recordSnapshot(
   db: Db,
-  sample: { value: number; amount: number; fundCount: number },
+  sample: { value: number; amount: number; profit: number; fundCount: number },
   now: number = Date.now(),
 ): boolean {
   const newest = db
@@ -267,8 +277,9 @@ export function recordSnapshot(
   if (newest && now - newest.ts_ms < SNAPSHOT_THROTTLE_MS) return false
 
   db.prepare(
-    'insert into portfolio_snapshot (ts_ms, total_value, total_amount, fund_count) values (?,?,?,?)',
-  ).run(now, sample.value, sample.amount, sample.fundCount)
+    `insert into portfolio_snapshot (ts_ms, total_value, total_amount, total_profit, fund_count)
+     values (?,?,?,?,?)`,
+  ).run(now, sample.value, sample.amount, sample.profit, sample.fundCount)
   return true
 }
 
@@ -280,7 +291,8 @@ export function listWindow(
 ): PortfolioPoint[] {
   const rows = db
     .prepare(
-      `select ts_ms as tsMs, total_value as value, total_amount as amount
+      `select ts_ms as tsMs, total_value as value, total_amount as amount,
+              total_profit as profit
          from portfolio_snapshot
         where ts_ms >= ? and ts_ms <= ?
         order by ts_ms asc`,

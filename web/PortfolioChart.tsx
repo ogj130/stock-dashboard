@@ -1,20 +1,25 @@
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import { money, pctText, signedMoney, tone } from './format'
 
 /**
- * 总资产曲线。手写 SVG，不引图表库：项目没有图表依赖，也不该为此多背一个
+ * 组合曲线。手写 SVG，不引图表库：项目没有图表依赖，也不该为此多背一个
  * 100KB 的包去画一条 110px 高的折线。
  *
  * 几何思路：曲线用 viewBox="0 0 1000 100" + preserveAspectRatio="none" 铺满宽度，
  * 但这样会把笔画和文字一起横向拉伸——所以
  *   · 笔画全部加 vector-effect="non-scaling-stroke"，粗细恒为 1.5px；
  *   · 文字（min/max、时间、差值）全交给 HTML 层绝对定位，任何宽度下都不变形。
+ *
+ * 三条曲线（总资产 / 当日收益 / 持有收益）同一次回包里一起到达，切换指标只
+ * 重算几何、不重新取数。三条线的量级差着两三个数量级（十万 vs 几千），
+ * 所以纵轴必须按**选中的那条**算，绝不能拿总资产的比例尺去画收益。
  */
 
 export interface HistoryPoint {
   tsMs: number
   value: number
   amount: number
+  profit: number
 }
 
 /** 与后端 `src/store/portfolio.ts` 的 HistoryRange 一一对应（tests 里有类型同构断言） */
@@ -36,6 +41,41 @@ export function isRangeKey(value: unknown): value is RangeKey {
 
 export function rangeLabel(range: RangeKey): string {
   return RANGE_OPTIONS.find((option) => option.key === range)?.label ?? '今日'
+}
+
+/** 曲线指标：字段名直接就是后端 point 上的键，切换时只做一次 `point[metric]` */
+export type MetricKey = 'value' | 'amount' | 'profit'
+
+export const METRIC_OPTIONS: ReadonlyArray<{ key: MetricKey; label: string }> = [
+  { key: 'value', label: '总资产' },
+  { key: 'amount', label: '当日收益' },
+  { key: 'profit', label: '持有收益' },
+]
+
+export const DEFAULT_METRIC: MetricKey = 'value'
+
+/** 指标选择的存档键：和档位分开存，改档位不该把指标打回总资产 */
+export const METRIC_STORAGE_KEY = 'pf-chart-metric'
+
+export function isMetricKey(value: unknown): value is MetricKey {
+  return typeof value === 'string' && METRIC_OPTIONS.some((option) => option.key === value)
+}
+
+export function metricLabel(metric: MetricKey): string {
+  return METRIC_OPTIONS.find((option) => option.key === metric)?.label ?? '总资产'
+}
+
+/**
+ * 从 localStorage 读回上次选的指标。隐私模式/被禁用时 getItem 会抛，
+ * 读不到就退回总资产——首屏不能因为一个偏好设置白屏。
+ */
+export function readStoredMetric(): MetricKey {
+  try {
+    const stored = window.localStorage.getItem(METRIC_STORAGE_KEY)
+    return isMetricKey(stored) ? stored : DEFAULT_METRIC
+  } catch {
+    return DEFAULT_METRIC
+  }
 }
 
 /** 接口回包：range/startMs/endMs 是「窗口」的权威描述，前端不重复算交易日 */
@@ -129,7 +169,7 @@ export function windowSubtitle(range: RangeKey, startMs: number, endMs: number):
 export interface ChartGeometry {
   /** 折线路径；0 个点时为空串 */
   line: string
-  /** 折线与底边围出的填充区 */
+  /** 折线与**基线**围出的填充区（value 的基线是底边，收益类指标的基线是零线） */
   area: string
   max: number
   min: number
@@ -142,6 +182,12 @@ export interface ChartGeometry {
   lastYPct: number
   /** 所有值相同（或只有一个点）：平线画在中线，且没有「涨跌」可言 */
   flat: boolean
+  /**
+   * 零基线的 y（viewBox 单位）；null 表示这条指标不画零线。
+   * 只有「可正可负的收益类指标」且数据真的跨过零时才给，正收益/负收益
+   * 一边倒的时候零线在框外，画不出来也不该画。
+   */
+  zeroY: number | null
 }
 
 const EMPTY: ChartGeometry = {
@@ -155,28 +201,36 @@ const EMPTY: ChartGeometry = {
   lastXPct: 100,
   lastYPct: 50,
   flat: true,
+  zeroY: null,
 }
 
 /**
  * 纯函数，便于单测。三种退化情况都必须给出能画的几何：
  * 0 个点 → 空几何（调用方渲染「暂无数据」）；1 个点 → 贯穿的平线 + 一个圆点；
  * 全部相等 → 中线平线（不除零，yOf 里的分母 min/max 差值不能是 0）。
+ *
+ * 纵轴范围**只来自选中的那条序列**。这是这个函数唯一容易出 bug 的地方：
+ * 拿总资产的 8 万当比例尺去画 ±5000 的收益，曲线会被压成一条贴边的直线。
  */
-export function buildGeometry(points: HistoryPoint[]): ChartGeometry {
+export function buildGeometry(
+  points: HistoryPoint[],
+  metric: MetricKey = DEFAULT_METRIC,
+): ChartGeometry {
   if (points.length === 0) return EMPTY
 
   let min = Number.POSITIVE_INFINITY
   let max = Number.NEGATIVE_INFINITY
   for (const p of points) {
-    if (p.value < min) min = p.value
-    if (p.value > max) max = p.value
+    const v = p[metric]
+    if (v < min) min = v
+    if (v > max) max = v
   }
   const flat = !(max - min > 1e-9)
   const inner = VIEW_H - PAD * 2
   const yOf = (v: number): number => (flat ? VIEW_H / 2 : PAD + (1 - (v - min) / (max - min)) * inner)
   const xOf = (i: number): number => (points.length <= 1 ? 0 : (i * VIEW_W) / (points.length - 1))
 
-  const coords = points.map((p, i) => [xOf(i), yOf(p.value)] as const)
+  const coords = points.map((p, i) => [xOf(i), yOf(p[metric])] as const)
   const lastCoord = coords[coords.length - 1]!
 
   let line: string
@@ -188,9 +242,17 @@ export function buildGeometry(points: HistoryPoint[]): ChartGeometry {
     line = coords.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${round1(x)} ${round1(y)}`).join('')
   }
 
+  // 收益类指标的填充必须「贴着零线」：正收益那半边的面积代表赚到的钱，
+  // 从底边起填会把「零」画在看不见的地方，正负两边看起来一样高。
+  // 零线在框外时夹到框边——这叫「零在更远处」，不是「零在这儿」。
+  const zeroY =
+    metric !== 'value' && !flat && min < 0 && max > 0 ? round1(yOf(0)) : null
+  const baselineY =
+    metric === 'value' ? VIEW_H : flat ? VIEW_H / 2 : Math.min(VIEW_H, Math.max(0, yOf(0)))
+
   return {
     line,
-    area: `${line}L${VIEW_W} ${VIEW_H}L0 ${VIEW_H}Z`,
+    area: `${line}L${VIEW_W} ${round1(baselineY)}L0 ${round1(baselineY)}Z`,
     max,
     min,
     gridY: round1(yOf(max)),
@@ -200,6 +262,45 @@ export function buildGeometry(points: HistoryPoint[]): ChartGeometry {
     lastXPct: points.length === 1 ? 100 : (lastCoord[0] / VIEW_W) * 100,
     lastYPct: (lastCoord[1] / VIEW_H) * 100,
     flat,
+    zeroY,
+  }
+}
+
+export interface DeltaSummary {
+  text: string
+  tone: ReturnType<typeof tone>
+}
+
+/**
+ * 角落那句「今日 +569.46 (+1.14%)」。
+ *
+ * 两个口径不能混：
+ *   · 总资产是**存量**，有意义的是窗口内的变化量（末 − 首），百分比也只对它成立；
+ *   · 当日收益/持有收益是**可正可负的水平值**，有意义的是最新那一跳的数
+ *     （"今天赚了多少" % 什么？没有可比的基数，所以不给百分比）。
+ */
+export function deltaSummary(
+  points: HistoryPoint[],
+  metric: MetricKey,
+  label: string,
+): DeltaSummary {
+  const last = points[points.length - 1]
+  if (!last) return { text: `${label} —`, tone: 'flat' }
+
+  if (metric !== 'value') {
+    const level = last[metric]
+    return { text: `${label} ${signedMoney(level)}`, tone: tone(level) }
+  }
+
+  const first = points[0]
+  // 只有一个点时，窗口内没有「变化」可言：显示 — 比显示 0.00 诚实
+  if (!first || points.length < 2) return { text: `${label} —`, tone: 'flat' }
+
+  const delta = last.value - first.value
+  const pct = first.value > 0 ? (delta / first.value) * 100 : null
+  return {
+    text: `${label} ${signedMoney(delta)}${pct === null ? '' : ` (${pctText(pct)})`}`,
+    tone: tone(delta),
   }
 }
 
@@ -213,10 +314,15 @@ interface PortfolioChartProps {
 
 export default function PortfolioChart({ range, data, onRangeChange }: PortfolioChartProps) {
   const gradientId = `pf-grad-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
+  /**
+   * 指标的选择权在这一层，不在 App：换指标**不碰网络**，三组数字已经在
+   * data.points 里了，多提一层状态只会让 App 的重渲染带着整个列表一起抖。
+   * 档位相反，它要重新取数，所以留在 App。
+   */
+  const [metric, setMetric] = useState<MetricKey>(readStoredMetric)
   const points = data?.points ?? []
-  const geo = buildGeometry(points)
+  const geo = buildGeometry(points, metric)
   const n = points.length
-  const first = points[0]
   const last = points[n - 1]
 
   // 切换档位后新一轮数据还没到：文案跟着**已有数据**的窗口，不跟着按钮走，
@@ -224,28 +330,48 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
   const shownRange = data?.range ?? range
   const label = rangeLabel(shownRange)
 
-  const delta = first && last ? last.value - first.value : 0
-  const deltaPct = first && first.value > 0 ? (delta / first.value) * 100 : null
-  const trend = tone(delta)
-
-  // 只有一个点时，窗口内没有「变化」可言：显示 — 比显示 0.00 诚实
-  const deltaText =
-    n < 2
-      ? `${label} —`
-      : `${label} ${signedMoney(delta)}${deltaPct === null ? '' : ` (${pctText(deltaPct)})`}`
+  const delta = deltaSummary(points, metric, label)
+  const trend = delta.tone
+  const title = metricLabel(metric)
 
   const xLabels = data ? axisLabels(shownRange, data.startMs, data.endMs) : []
   const subtitle = data ? windowSubtitle(shownRange, data.startMs, data.endMs) : '—'
 
   const ariaLabel =
     n === 0
-      ? `总资产曲线暂无数据（${label}）`
-      : `总资产 ${label} 走势（${subtitle}），${money(geo.min)} 至 ${money(geo.max)}，最新 ${money(last?.value ?? 0)}`
+      ? `${title}曲线暂无数据（${label}）`
+      : `${title} ${label} 走势（${subtitle}），${money(geo.min)} 至 ${money(geo.max)}，最新 ${money(last?.[metric] ?? 0)}`
+
+  function changeMetric(next: string): void {
+    if (!isMetricKey(next)) return
+    setMetric(next)
+    try {
+      window.localStorage.setItem(METRIC_STORAGE_KEY, next)
+    } catch {
+      // 存不了就算了，当前这一档仍然有效
+    }
+  }
 
   return (
-    <section className={`chart glass card ${trend}`} aria-label="总资产走势">
+    <section className={`chart glass card ${trend}`} aria-label={`${title}走势`}>
       <div className="chart-head">
-        <span className="chart-title">总资产</span>
+        {/*
+          下拉菜单而不是第二条分段控件：表头已经有「今日/1时/6时/24时/7日」五个按钮，
+          390px 宽再加一排会把右侧的涨跌数字挤到第三行。原生 select 在手机上点开
+          是系统选择器，比自绘菜单更稳，也省一整个控件的高度。
+        */}
+        <select
+          className="chart-metric"
+          aria-label="曲线指标"
+          value={metric}
+          onChange={(event) => changeMetric(event.target.value)}
+        >
+          {METRIC_OPTIONS.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </select>
         <div className="chart-ranges" role="group" aria-label="时间范围">
           {RANGE_OPTIONS.map((option) => (
             <button
@@ -260,7 +386,7 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
           ))}
         </div>
         <span className="chart-meta">
-          <span className={`chart-delta num ${trend}`}>{deltaText}</span>
+          <span className={`chart-delta num ${trend}`}>{delta.text}</span>
           <span className="chart-sub">{subtitle}</span>
         </span>
       </div>
@@ -295,6 +421,17 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
                     vectorEffect="non-scaling-stroke"
                   />
                   <path className="chart-area" d={geo.area} fill={`url(#${gradientId})`} />
+                  {/* 零基线：收益可正可负，没有这条线就分不清「涨回来的」和「本来就低」 */}
+                  {geo.zeroY !== null && (
+                    <line
+                      className="chart-zero"
+                      x1={0}
+                      y1={geo.zeroY}
+                      x2={VIEW_W}
+                      y2={geo.zeroY}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
                   <path
                     className="chart-line"
                     d={geo.line}

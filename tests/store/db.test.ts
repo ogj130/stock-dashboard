@@ -101,9 +101,9 @@ describe('db schema', () => {
     expect(rows[0].model_pct).toBeCloseTo(1.3, 6)
   })
 
-  it('v4 之后 SCHEMA_VERSION 为 4，且重复 migrate 不重复执行 v2/v3', () => {
+  it('v5 之后 SCHEMA_VERSION 为 5，且重复 migrate 不重复执行 v2/v3', () => {
     const db = openDb(':memory:')
-    expect(SCHEMA_VERSION).toBe(4)
+    expect(SCHEMA_VERSION).toBe(5)
     expect(() => migrate(db)).not.toThrow()
     const idx = db.prepare("select name from sqlite_master where type='index' and name='idx_estimate_day'").all()
     expect(idx).toHaveLength(1)
@@ -111,7 +111,7 @@ describe('db schema', () => {
 })
 
 describe('db schema v4 · portfolio_snapshot', () => {
-  it('表与 ts 索引都在，且 user_version 真的推到 4', () => {
+  it('表与 ts 索引都在，且 user_version 真的推到 5', () => {
     const db = openDb(':memory:')
     const cols = db.prepare('pragma table_info(portfolio_snapshot)').all() as Array<{
       name: string
@@ -119,9 +119,9 @@ describe('db schema v4 · portfolio_snapshot', () => {
       type: string
     }>
     expect(cols.map((c) => c.name)).toEqual([
-      'id', 'ts_ms', 'total_value', 'total_amount', 'fund_count',
+      'id', 'ts_ms', 'total_value', 'total_amount', 'fund_count', 'total_profit',
     ])
-    // 四个业务字段都不许为空：缺 ts 画不了横轴，缺 value 画不了纵轴
+    // 五个业务字段都不许为空：缺 ts 画不了横轴，缺 value 画不了纵轴
     expect(cols.filter((c) => c.name !== 'id').every((c) => c.notnull === 1)).toBe(true)
 
     const idx = db
@@ -130,7 +130,7 @@ describe('db schema v4 · portfolio_snapshot', () => {
     expect(idx.map((r) => r.name)).toEqual(['idx_portfolio_ts'])
 
     const row = db.prepare('pragma user_version').get() as { user_version: number }
-    expect(row.user_version).toBe(4)
+    expect(row.user_version).toBe(5)
   })
 
   it('快照表可插入并按 ts_ms 取回', () => {
@@ -143,26 +143,96 @@ describe('db schema v4 · portfolio_snapshot', () => {
       total_value: number
       total_amount: number
       fund_count: number
+      total_profit: number
     }
     expect(row.ts_ms).toBe(1_700_000_000_000)
     expect(row.total_value).toBeCloseTo(84_321.5, 6)
     expect(row.total_amount).toBeCloseTo(-12.34, 6)
     expect(row.fund_count).toBe(3)
+    // 不写这一列时走 v5 的 default 0（老写入方不必改也能继续跑）
+    expect(row.total_profit).toBe(0)
   })
 
-  it('从 v3 升级到 v4 时保留已有表与数据（增量迁移，不是重建）', () => {
+  it('从 v3 升级到 v4→v5 时保留已有表与数据（增量迁移，不是重建）', () => {
     const db = openDb(':memory:')
     db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
-    // 退回 v3 再迁一次，模拟「老库第一次见到 v4」
+    // 退回 v3 再迁一次，模拟「老库第一次见到 v4/v5」
     db.exec('drop table portfolio_snapshot')
     db.exec('pragma user_version = 3')
     migrate(db)
 
     expect((db.prepare("select count(*) c from fund where code='X'").get() as any).c).toBe(1)
-    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(4)
+    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(5)
     expect(
       db.prepare("select name from sqlite_master where type='table' and name='portfolio_snapshot'").all(),
     ).toHaveLength(1)
+  })
+})
+
+describe('db schema v5 · total_profit（持有收益）', () => {
+  type Row = { total_profit: number }
+
+  /** 把库退回「v4 形状」：5 列、没有 total_profit，塞两行历史数据 */
+  function v4Db(): ReturnType<typeof openDb> {
+    const db = openDb(':memory:')
+    db.exec('drop table portfolio_snapshot')
+    db.exec(`
+      create table portfolio_snapshot (
+        id integer primary key autoincrement,
+        ts_ms integer not null,
+        total_value real not null,
+        total_amount real not null,
+        fund_count integer not null
+      );
+      create index idx_portfolio_ts on portfolio_snapshot(ts_ms);
+    `)
+    db.exec(
+      `insert into portfolio_snapshot (ts_ms, total_value, total_amount, fund_count)
+       values (1, 84321.5, -12.34, 3), (2, 85000, 500, 3)`,
+    )
+    db.exec('pragma user_version = 4')
+    return db
+  }
+
+  it('列存在、real、not null、默认 0', () => {
+    const db = openDb(':memory:')
+    const cols = db.prepare('pragma table_info(portfolio_snapshot)').all() as Array<{
+      name: string
+      type: string
+      notnull: number
+      dflt_value: string | null
+    }>
+    const col = cols.find((c) => c.name === 'total_profit')
+    expect(col).toBeDefined()
+    expect(col!.type).toBe('REAL')
+    expect(col!.notnull).toBe(1)
+    expect(col!.dflt_value).toBe('0')
+  })
+
+  it('从 v4 升级（alter table）把历史行回填成 0，且旧数据一行不丢', () => {
+    const db = v4Db()
+    migrate(db)
+
+    const rows = db
+      .prepare('select ts_ms, total_value, total_profit from portfolio_snapshot order by ts_ms')
+      .all() as Array<{ ts_ms: number; total_value: number; total_profit: number }>
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.ts_ms)).toEqual([1, 2])
+    expect(rows.map((r) => r.total_profit)).toEqual([0, 0])
+    expect(rows[0]!.total_value).toBeCloseTo(84_321.5, 6)
+    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(5)
+  })
+
+  it('可写负数（持有浮亏），不会被 check 或 not null 拦下', () => {
+    const db = openDb(':memory:')
+    db.prepare(
+      `insert into portfolio_snapshot (ts_ms, total_value, total_amount, total_profit, fund_count)
+       values (?,?,?,?,?)`,
+    ).run(1, 80_000, -300, -4_321.09, 2)
+    expect((db.prepare('select total_profit from portfolio_snapshot').get() as Row).total_profit).toBeCloseTo(
+      -4_321.09,
+      6,
+    )
   })
 })
 

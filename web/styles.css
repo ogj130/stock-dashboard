@@ -216,10 +216,38 @@ body {
   margin-left: auto;
 }
 
-.chart-title {
-  color: var(--muted);
+/**
+ * 指标下拉（总资产 / 当日收益 / 持有收益）。
+ *
+ * 保留原生 select：手机上点开是系统选择器，比自绘菜单更稳，也不用处理「点外面
+ * 关闭」这类状态。外观上跟右边的档位控件用同一套描边与底色，免得表头出现两种
+ * 控件语言；字号抬到 12px + 字重 600，因为它同时承担了原来「标题」的位置。
+ */
+.chart-metric {
+  flex: 0 0 auto;
+  max-width: 104px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 999px;
+  background: var(--glass-2);
+  color: var(--text);
+  font: inherit;
   font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
   white-space: nowrap;
+  cursor: pointer;
+  /* 原生箭头在不同引擎里颜色不同，指定暗色方案让弹出列表也别白得刺眼 */
+  color-scheme: dark;
+}
+
+.chart-metric:hover {
+  border-color: rgba(120, 160, 255, 0.35);
+}
+
+.chart-metric:focus-visible {
+  outline: 2px solid rgba(120, 160, 255, 0.6);
+  outline-offset: 2px;
 }
 
 /**
@@ -302,6 +330,18 @@ body {
   stroke: currentColor;
   stroke-linejoin: round;
   stroke-linecap: round;
+}
+
+/**
+ * 零基线：只在收益类指标（当日收益 / 持有收益）真的跨过零时出现。
+ * 比最高点那条网格线略实一点（它是读数的一部分），又比曲线淡得多（它是尺子不是结论），
+ * 虚线 + non-scaling-stroke 保证任何屏幕密度下都是 1px 的点划。
+ */
+.chart-zero {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+  opacity: 0.55;
 }
 
 /* min/max 标签挂在曲线外侧：max 悬在最高点之上、min 沉在最低点之下 */

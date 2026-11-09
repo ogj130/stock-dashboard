@@ -167,10 +167,15 @@ describe('GET /api/estimate · 组合快照落库与节流', () => {
     ts_ms: number
     total_value: number
     total_amount: number
+    total_profit: number
     fund_count: number
   }
   const snaps = (db: Db): Snap[] =>
-    db.prepare('select ts_ms, total_value, total_amount, fund_count from portfolio_snapshot order by ts_ms').all() as unknown as Snap[]
+    db
+      .prepare(
+        'select ts_ms, total_value, total_amount, total_profit, fund_count from portfolio_snapshot order by ts_ms',
+      )
+      .all() as unknown as Snap[]
 
   it('一次估值落一行，值等于响应里的汇总（市值/收益/只数）', async () => {
     const { db, app } = makeApp([
@@ -183,8 +188,14 @@ describe('GET /api/estimate · 组合快照落库与节流', () => {
 
     const value = body.funds.reduce((s: number, f: { marketValue: number }) => s + f.marketValue, 0)
     const amount = body.funds.reduce((s: number, f: { amount: number }) => s + f.amount, 0)
+    const profit = body.funds.reduce(
+      (s: number, f: { marketValue: number; costBasis: number }) => s + (f.marketValue - f.costBasis),
+      0,
+    )
     expect(stored[0]!.total_value).toBeCloseTo(value, 6)
     expect(stored[0]!.total_amount).toBeCloseTo(amount, 6)
+    // 持有收益 = Σ(市值 − 成本)，与当日估算收益是两条独立的腿
+    expect(stored[0]!.total_profit).toBeCloseTo(profit, 6)
     expect(stored[0]!.fund_count).toBe(2)
   })
 

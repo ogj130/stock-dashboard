@@ -165,6 +165,11 @@ const MIGRATIONS: Array<(db: Db) => void> = [
       create index idx_portfolio_ts on portfolio_snapshot(ts_ms);
     `)
   },
+  // v5：曲线要能看「赚了多少」——持有收益 = Σ(市值 − 成本)。历史行没有这个值，
+  // 用 0 回填；旧点在新指标下会显示为贴零的直线，这是如实反映「当时没记录」。
+  (db) => {
+    db.exec(`alter table portfolio_snapshot add column total_profit real not null default 0`)
+  },
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

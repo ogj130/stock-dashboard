@@ -1,16 +1,28 @@
 // tests/web/portfolioChart.test.ts
 import { describe, it, expect } from 'vitest'
 import {
+  DEFAULT_METRIC,
+  METRIC_OPTIONS,
+  METRIC_STORAGE_KEY,
   RANGE_OPTIONS,
   axisLabels,
   buildGeometry,
+  deltaSummary,
+  isMetricKey,
+  metricLabel,
+  readStoredMetric,
   windowSubtitle,
   type HistoryPoint,
+  type MetricKey,
   type RangeKey,
 } from '../../web/PortfolioChart'
 import { HISTORY_RANGES, type HistoryRange } from '../../src/store/portfolio'
 
-const p = (value: number, tsMs = 0): HistoryPoint => ({ tsMs, value, amount: 0 })
+const p = (
+  value: number,
+  tsMs = 0,
+  extra: Partial<Pick<HistoryPoint, 'amount' | 'profit'>> = {},
+): HistoryPoint => ({ tsMs, value, amount: 0, profit: 0, ...extra })
 
 /**
  * 曲线是纯函数算出来的几何，所以三种退化情况能在 node 里直接钉住：
@@ -124,5 +136,137 @@ describe('档位键与后端同构', () => {
     const frontend: Same<HistoryRange, RangeKey> = true
     expect(backend && frontend).toBe(true)
     expect(RANGE_OPTIONS.map((o) => o.key)).toEqual([...HISTORY_RANGES])
+  })
+})
+
+/**
+ * 指标切换只重算几何，不重新取数。这里把三条曲线的「纵轴、零线、填充基线、
+ * 角落文案」全部钉住——它们各自独立，任何一个跟着 value 走，图上就会出现
+ * 「线是收益、比例尺是总资产」这种最难看也最误导的 bug。
+ */
+describe('buildGeometry · 纵轴跟着选中的序列走', () => {
+  // 同一批点：总资产 8 万上下，当日收益 ±几百。量级差两个数量级。
+  const points: HistoryPoint[] = [
+    { tsMs: 0, value: 80_000, amount: -420.5, profit: 0 },
+    { tsMs: 1, value: 84_568, amount: 120, profit: 0 },
+    { tsMs: 2, value: 84_321, amount: 569.46, profit: 0 },
+  ]
+
+  it('总资产：纵轴是总资产区间，不画零线（存量恒为正）', () => {
+    const g = buildGeometry(points, 'value')
+    expect(g.min).toBe(80_000)
+    expect(g.max).toBe(84_568)
+    expect(g.zeroY).toBeNull()
+    // 填充仍然贴底：value 的「底」本来就没有语义
+    expect(g.area.endsWith('L1000 100L0 100Z')).toBe(true)
+  })
+
+  it('当日收益：纵轴换成 amount 的区间（−420.5 ~ 569.46），不是 8 万', () => {
+    const g = buildGeometry(points, 'amount')
+    expect(g.min).toBe(-420.5)
+    expect(g.max).toBe(569.46)
+    expect(g.area).not.toBe(buildGeometry(points, 'value').area)
+  })
+
+  it('跨零：零基线落在框内，填充的基线也是零线而不是底边', () => {
+    const g = buildGeometry(points, 'amount')
+    expect(g.zeroY).not.toBeNull()
+    // −420.5 在下、569.46 在上，零线严格落在中间
+    expect(g.zeroY!).toBeGreaterThan(14)
+    expect(g.zeroY!).toBeLessThan(86)
+    // area 的两端基线 = 零线（y 相同），不是 100
+    const match = /L1000 ([\d.]+)L0 \1Z$/.exec(g.area)
+    expect(match, g.area).not.toBeNull()
+    expect(Number(match![1])).toBeCloseTo(g.zeroY!, 5)
+    expect(g.area).not.toMatch(/L1000 100L0 100Z/)
+  })
+
+  it('全零（历史行 total_profit 都是 0）：平线画在中线、不画零线、标签读 0.00', () => {
+    const zeros = [p(84_000, 0), p(84_100, 1), p(84_200, 2)].map((row) => ({ ...row, profit: 0 }))
+    const g = buildGeometry(zeros, 'profit')
+    expect(g.flat).toBe(true)
+    expect(g.max).toBe(0)
+    expect(g.min).toBe(0)
+    expect(g.line).toBe('M0 50L500 50L1000 50')
+    expect(g.zeroY).toBeNull()
+    // 退化区间不许除零：min/max 标签都压在中线
+    expect(g.yMaxPct).toBe(50)
+    expect(g.yMinPct).toBe(50)
+    expect(deltaSummary(zeros, 'profit', '今日').text).toBe('今日 0.00')
+  })
+
+  it('全负（一直浮亏）：零线在框外，不画；填充贴顶而不是贴底', () => {
+    const losing = [p(1, 0, { profit: -100 }), p(1, 1, { profit: -300 })]
+    const g = buildGeometry(losing, 'profit')
+    expect(g.max).toBe(-100)
+    expect(g.min).toBe(-300)
+    expect(g.zeroY).toBeNull()
+    expect(g.area.endsWith('L1000 0L0 0Z')).toBe(true)
+  })
+})
+
+describe('deltaSummary · 角落那句话必须跟指标对口径', () => {
+  const points: HistoryPoint[] = [
+    { tsMs: 0, value: 50_000, amount: 0, profit: 12_000 },
+    { tsMs: 1, value: 50_569.46, amount: 7_515.49, profit: 15_907.66 },
+  ]
+
+  it('总资产：窗口内变化 + 百分比（百分比只对存量有意义）', () => {
+    expect(deltaSummary(points, 'value', '今日')).toEqual({
+      text: '今日 +569.46 (+1.14%)',
+      tone: 'up',
+    })
+  })
+
+  it('当日收益：最新一跳的水平值，不带百分比', () => {
+    expect(deltaSummary(points, 'amount', '今日')).toEqual({
+      text: '今日 +7,515.49',
+      tone: 'up',
+    })
+  })
+
+  it('持有收益：最新一跳的水平值，不带百分比', () => {
+    expect(deltaSummary(points, 'profit', '今日')).toEqual({
+      text: '今日 +15,907.66',
+      tone: 'up',
+    })
+  })
+
+  it('颜色按最新值的符号：负数走绿（跌），零算持平', () => {
+    const negative: HistoryPoint[] = [
+      { tsMs: 0, value: 1, amount: 800, profit: 0 },
+      { tsMs: 1, value: 1, amount: -500, profit: 0 },
+    ]
+    expect(deltaSummary(negative, 'amount', '今日').tone).toBe('down')
+    expect(deltaSummary(negative, 'amount', '今日').text).toBe('今日 -500.00')
+    expect(deltaSummary([{ tsMs: 0, value: 1, amount: 0, profit: 0 }], 'amount', '今日').tone).toBe('flat')
+  })
+
+  it('空数据与单点：总资产说「—」而不是 0.00，收益类仍给水平值', () => {
+    expect(deltaSummary([], 'value', '今日').text).toBe('今日 —')
+    expect(deltaSummary([p(84_000)], 'value', '今日').text).toBe('今日 —')
+    expect(deltaSummary([p(84_000, 0, { profit: -2.5 })], 'profit', '今日').text).toBe('今日 -2.50')
+  })
+})
+
+describe('指标键与后端字段同构', () => {
+  it('三个指标名就是后端 point 上的字段名', () => {
+    expect(METRIC_OPTIONS.map((o) => o.key)).toEqual(['value', 'amount', 'profit'])
+    expect(METRIC_OPTIONS.map((o) => o.label)).toEqual(['总资产', '当日收益', '持有收益'])
+    const backend: MetricKey[] = ['value', 'amount', 'profit']
+    expect(backend).toEqual(METRIC_OPTIONS.map((o) => o.key))
+  })
+
+  it('默认总资产；非法值退回默认；标签有兜底', () => {
+    expect(DEFAULT_METRIC).toBe('value')
+    expect(isMetricKey('profit')).toBe(true)
+    expect(isMetricKey('turnover')).toBe(false)
+    expect(isMetricKey(null)).toBe(false)
+    expect(metricLabel('amount')).toBe('当日收益')
+  })
+
+  it('localStorage 读不到（node 环境没有 window / 隐私模式抛错）时退回总资产', () => {
+    expect(METRIC_STORAGE_KEY).toBe('pf-chart-metric')
+    expect(readStoredMetric()).toBe('value')
   })
 })

@@ -7,11 +7,18 @@ import { etWallClockToUtcMs, HISTORY_MAX_POINTS } from '../../src/store/portfoli
 /** 固定时钟：session 档位要断言边界，不能被 Date.now() 的毫秒抖动带偏 */
 const NOW = etWallClockToUtcMs(2026, 11, 9, 15, 0) // 周一 15:00 美东，盘中
 
-function seed(db: Db, stamps: number[], value = 100_000, amount = 0): void {
+function seed(
+  db: Db,
+  stamps: number[],
+  value = 100_000,
+  amount = 0,
+  profit = 0,
+): void {
   const stmt = db.prepare(
-    'insert into portfolio_snapshot (ts_ms, total_value, total_amount, fund_count) values (?,?,?,?)',
+    `insert into portfolio_snapshot (ts_ms, total_value, total_amount, total_profit, fund_count)
+     values (?,?,?,?,?)`,
   )
-  for (const ts of stamps) stmt.run(ts, value, amount, 2)
+  for (const ts of stamps) stmt.run(ts, value, amount, profit, 2)
 }
 
 function makeApp(db: Db, now = NOW) {
@@ -123,15 +130,20 @@ describe('GET /api/portfolio/history · 档位', () => {
 })
 
 describe('GET /api/portfolio/history · 数据', () => {
-  it('点按老→新返回，金额保留两位', async () => {
+  it('点按老→新返回，三个指标都在且金额保留两位', async () => {
     const db = openDb(':memory:')
-    seed(db, [NOW - 2 * HOUR, NOW - HOUR], 84_321.29999999999, -12.346)
-    seed(db, [NOW - 30 * MIN], 84_322, 5)
+    seed(db, [NOW - 2 * HOUR, NOW - HOUR], 84_321.29999999999, -12.346, 15_907.664)
+    seed(db, [NOW - 30 * MIN], 84_322, 5, -4_321.099)
     const { body } = await history(makeApp(db), '?range=6h')
     expect(body.points.map((p) => p.tsMs)).toEqual([NOW - 2 * HOUR, NOW - HOUR, NOW - 30 * MIN])
     expect(body.points[0]!.value).toBe(84_321.3)
     expect(body.points[0]!.amount).toBe(-12.35)
+    expect(body.points[0]!.profit).toBe(15_907.66)
     expect(body.points[2]!.value).toBe(84_322)
+    // 收益为负时原样带符号回给前端，不取绝对值
+    expect(body.points[2]!.profit).toBe(-4_321.1)
+    // 三个指标一次给全：切换指标不需要再发请求
+    expect(Object.keys(body.points[0] ?? {}).sort()).toEqual(['amount', 'profit', 'tsMs', 'value'])
   })
 
   it('空库返回空数组 + 合法窗口，而不是 500（曲线渲染成「暂无数据」）', async () => {

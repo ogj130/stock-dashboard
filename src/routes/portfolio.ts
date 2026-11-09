@@ -14,7 +14,7 @@ export interface PortfolioHistoryResponse {
   /** 窗口边界，UI 用它标注横轴与副标题，不必自己再猜一次交易日 */
   startMs: number
   endMs: number
-  points: Array<{ tsMs: number; value: number; amount: number }>
+  points: Array<{ tsMs: number; value: number; amount: number; profit: number }>
 }
 
 /** 是否「传了这个参数」——空串当没传，`?range=` 不该变成一次非法查询 */
@@ -61,6 +61,7 @@ export function registerPortfolioRoutes(
           tsMs: p.tsMs,
           value: round2(p.value),
           amount: round2(p.amount),
+          profit: round2(p.profit),
         })),
       }
     },
