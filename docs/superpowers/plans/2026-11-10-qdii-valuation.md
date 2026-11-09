@@ -1083,6 +1083,129 @@ git add -A && git commit -m "feat(sources): 新浪兜底与 alpaca 推流骨架"
 
 ---
 
+### Task 7.5: 数据层加固（M1 审查阻断项）
+
+> 这一节由 M1 整体审查的实测结论驱动，**必须先于 Task 16 完成**，否则估值路由会在真实基金上 500。
+
+- **B1 单票缺失杀死全局**：`QuoteRegistry` 用了"池化后总数不足即抛错"的全有或全无判定。实测 160644 持仓含港股（`00992/01888/09988/03690`，东财市场码 116），`probeMarket` 只试 105/106/107 ⇒ 四个源全缺 ⇒ 抛 `all sources failed` ⇒ 所有基金都没有估值。QDII 持仓里有港股是常态，不是边缘情况。
+- **B2 市场码默认值是活陷阱**：`EastmoneySource` 的 `marketOf` 默认 `() => MARKET.NASDAQ`。实测 162411（华宝标普油气，全 NYSE）：默认 105 时 **0/10**，正确 106 时 10/10。计划里 `marketMap.get(s) ?? MARKET.NASDAQ` 这个回退同样把"未知"变成"NASDAQ"。
+- **B2 最优解（N2）**：持仓报文的每行本来就带 `NEWTEXCH`（值即东财 secid 市场码：105/106/107/116/…），`holdings.ts` 把它丢了。保留它即可**免费填满映射**，无需探测、无需默认值。
+- **S5 会稳定 500**：`covered_weight` 的 CHECK 是精确 `<= 1`，而 100 个归一化权重求和有 **38%** 概率浮点漂移超过 1.0（2000 次模拟中 764 次）。插入 `estimate_log` 时 CHECK 失败会 abort 事务。
+- **S1 `pct` 从不校验**：东财对 `f3` 缺失/`"-"` 的行给 `pct: 0` 而非丢弃；腾讯 `Number(f[32] ?? 0)` 对 `"--"` 给 NaN；CNBC 的 `num('')` 返回 NaN 且只保护了 price/prevClose。而 `pct` 是唯一被产品消费的字段，NaN 会静默污染 Σw·pct。
+- **S2 交叉校验无断言**：`checkMap` 不检查条数，catch 里也不 `markFailure`，一个坏掉的校验源会永久留任，并且**只删除它唯一返回的那只票**——行为完全反了。
+
+**Files:**
+- Modify: `src/types.ts`（`Holding` 加可选 `market`）
+- Modify: `src/fund/holdings.ts`（解析 `NEWTEXCH`）
+- Modify: `src/sources/eastmoney.ts`（`marketOf` 改为返回 `number | undefined`，未知则**跳过该 symbol 不发请求**）
+- Modify: `src/sources/registry.ts`（partial 返回 + `lastMissing()`；`pct` 有限性校验；校验源条数断言与失败记账）
+- Modify: `src/store/db.ts`（**v3 迁移**：`covered_weight` 放宽到 `<= 1.000001`）
+- Test: 对应各测试文件追加用例
+
+- [ ] **Step 1: `Holding` 带上市场码**
+
+`src/types.ts` 的 `Holding` 增加可选字段：
+
+```ts
+export interface Holding {
+  symbol: string
+  name: string
+  weight: number       // 0~1 的小数
+  /** 东财 secid 市场码（105 NASDAQ / 106 NYSE / 107 AMEX / 116 港股…）。能拿到就必须带 */
+  market?: number
+}
+```
+
+- [ ] **Step 2: `holdings.ts` 解析 `NEWTEXCH`**
+
+`RawStock` 加 `NEWTEXCH?: string`，`parsePosition` 里：
+
+```ts
+const market = Number(s.NEWTEXCH)
+// NEWTEXCH 缺失或非法时留 undefined，绝不猜一个默认市场——
+// 猜错不是丢一只票，而是让整批请求返回 data:null
+const m = Number.isFinite(market) && market > 0 ? market : undefined
+```
+
+映射进 `Holding.market`。测试追加一条：报文带 `NEWTEXCH: '106'` 时产出 `market: 106`。
+
+- [ ] **Step 3: 东财不再猜市场码**
+
+```ts
+export class EastmoneySource implements QuoteSource {
+  // 必须传入；返回 undefined 表示"市场未知"，该 symbol 将被跳过而不是猜 105
+  constructor(private marketOf: (symbol: string) => number | undefined) {}
+
+  async fetchQuotes(symbols: string[]): Promise<Quote[]> {
+    const resolvable = symbols.filter((s) => this.marketOf(s) !== undefined)
+    if (resolvable.length === 0) return []
+    const secids = resolvable.slice(0, this.maxBatch).map((s) => toSecid(s, this.marketOf(s)!)).join(',')
+    // ...
+  }
+}
+```
+
+- [ ] **Step 4: registry 容忍单票缺失**
+
+`getQuotes` 语义改为：
+- 返回**实际拿到的** `Map`（可以少于请求）
+- 缺口通过 `lastMissing(): string[]` 暴露
+- 只有在**所有源对同一 symbol 都失败**且该 symbol 属于"可解析"集合时才记为 missing
+- 不再因为部分缺失而抛 `all sources failed`；只有全部源连一条都拿不到时才抛
+
+同时：
+- 丢弃 `pct` 非有限的 Quote（`Number.isFinite(q.pct)`），并在 `lastMissing` 里记录
+- 交叉校验的 `checkMap` 也要检查条数；catch 里 `markFailure(checker.id)`
+
+- [ ] **Step 5: v3 迁移放宽 CHECK**
+
+```ts
+  // v3：covered_weight 的精确上界会让浮点漂移误伤。
+  // 100 个归一化权重求和，实测 38% 的概率 > 1.0（2000 次模拟 764 次），
+  // 而 CHECK 失败会 abort 整个 logEstimates 事务，路由 500。
+  (db) => {
+    // SQLite 不能直接改 CHECK，需要重建表：先建新表、搬数据、换名
+    db.exec(`
+      create table estimate_log_new (
+        id integer primary key autoincrement,
+        fund_code text not null references fund(code) on delete cascade,
+        model_ts integer not null,
+        target_nav_date text not null,
+        phase text not null check (phase in ('live', 'settled')),
+        model_pct real not null,
+        model_amount real not null default 0,
+        covered_weight real not null check (covered_weight >= 0 and covered_weight <= 1.000001),
+        lag_days integer not null,
+        exposure real not null
+      );
+      insert into estimate_log_new select id, fund_code, model_ts, target_nav_date, phase,
+        model_pct, model_amount, covered_weight, lag_days, exposure from estimate_log;
+      drop table estimate_log;
+      alter table estimate_log_new rename to estimate_log;
+      create index idx_estimate_lookup on estimate_log(fund_code, target_nav_date, phase);
+      create unique index idx_estimate_day on estimate_log(fund_code, target_nav_date, phase);
+      create index idx_estimate_ts on estimate_log(model_ts);
+    `)
+  },
+```
+
+- [ ] **Step 6: 全量验证 + 真实基金复现**
+
+必须复现并证明修好了：
+```bash
+# 160644 含港股 —— 修复前抛 all sources failed，修复后应返回美股部分
+npx tsx -e "..."   # 自行编写：resolveHoldingsFrom('160644') → 用 market 建 marketOf → registry.getQuotes → 打印 size 与 lastMissing()
+```
+期望：不再抛错，返回 NVDA/MU/TSM/AMD/INTC 等美股，港股出现在 `lastMissing()` 里。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add -A && git commit -m "fix(data): 单票缺失不再杀死全局、市场码不猜默认、covered_weight 放宽"
+```
+
+---
+
 ### Task 8: 源注册表、失败降级与冲突裁决
 
 > **实测发现的关键坑（2026-11-10 验证）**：东财的 `secids` 必须给对市场码。把 NYSE 的票（IBM）放到 `105.` 前缀，接口返回 `{"rc":102,"data":null}` —— **整批失败、一只都不回**，而不是只丢那一只。更阴险的是 `105.V`（也是 NYSE）居然会被自动纠正成 `f13=106` 并正常返回，所以随机测几只根本发现不了这个问题。
