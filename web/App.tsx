@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import PortfolioChart, { type HistoryPoint } from './PortfolioChart'
+import { money, pctText, signedMoney, tone } from './format'
 
 /**
  * 与 src/engine/pipeline.ts 的 FundEstimate 一一对应。
@@ -70,17 +72,8 @@ interface FundRowLite {
 
 const REFRESH_MS = 5000
 
-const money = (n: number) =>
-  n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-/** 带正负号的金额：中文习惯 + 赚 / − 亏，符号本身就是语气；0 不带符号 */
-const signedMoney = (n: number) =>
-  n === 0 ? money(0) : `${n < 0 ? '-' : '+'}${money(Math.abs(n))}`
-
-const pctText = (n: number) => `${n > 0 ? '+' : ''}${n.toFixed(2)}%`
-
-/** 红涨绿跌（A 股/国内习惯），0 视为无色，避免把持平刷成一片红 */
-const tone = (n: number) => (n > 0 ? 'up' : n < 0 ? 'down' : 'flat')
+/** 折线图窗口。后端 /api/portfolio/history 支持 1~72 小时，这里固定 6 小时 */
+const HISTORY_HOURS = 6
 
 /**
  * 规则 1：覆盖率 0 时引擎仍会给出一个由汇率腿算出来的 navPct。
@@ -152,6 +145,8 @@ export default function App() {
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
   /** 'all' 或某个板块名 */
   const [tab, setTab] = useState<string>('all')
+  /** 服务端存的组合市值点（老 → 新）。刷新页面不会丢，因为点不在这儿的 state 里 */
+  const [history, setHistory] = useState<HistoryPoint[]>([])
 
   const [code, setCode] = useState('')
   const [marketValue, setMarketValue] = useState('')
@@ -162,15 +157,20 @@ export default function App() {
   const load = useCallback(async () => {
     if (typeof document !== 'undefined' && document.hidden) return
     try {
-      const [estimate, fundsRes] = await Promise.all([
+      const [estimate, fundsRes, hist] = await Promise.all([
         getJson<EstimateResponse>('/api/estimate'),
         getJson<{ funds: FundRowLite[] }>('/api/funds'),
+        // 曲线失败不许拖垮估值：取不到就沿用上一轮的点，页面照常跳数字
+        getJson<{ points: HistoryPoint[] }>(`/api/portfolio/history?hours=${HISTORY_HOURS}`).catch(
+          () => null,
+        ),
       ])
       if (!aliveRef.current) return
       const map: Record<string, number> = {}
       for (const row of fundsRes.funds) map[row.code] = row.id
       setData(estimate)
       setIdsByCode(map)
+      if (hist) setHistory(hist.points)
       setError(null)
       setUpdatedAt(Date.now())
     } catch (err) {
@@ -261,7 +261,7 @@ export default function App() {
     }
     // 没有可比数值的行（无覆盖的金额、没配指数的板块）两个方向都沉到末尾：
     // 它们在表格里显示的是「—」，插在有序数字中间只会误导
-    return [...filtered].sort((a, b) => {
+    const sorted = [...filtered].sort((a, b) => {
       const av = valueOf(a)
       const bv = valueOf(b)
       if (av === null && bv === null) return 0
@@ -269,7 +269,15 @@ export default function App() {
       if (bv === null) return -1
       return sort.dir === 'desc' ? bv - av : av - bv
     })
-  }, [funds, tab, sort, marketIndices])
+
+    // 展开的那一行钉在列表最上面：它不是「排序结果里的一行」，而是当前正在看的那只。
+    // 先排序再抽出来，所以收起时顺序完全不受影响；pin 只挪位置、不碰 .row 的网格列，
+    // 三列数字照样和表头对齐。展开的基金若被 tab 过滤掉了，就什么也不钉。
+    if (openCode === null) return sorted
+    const pinned = sorted.find((f) => f.code === openCode)
+    if (!pinned) return sorted
+    return [pinned, ...sorted.filter((f) => f.code !== openCode)]
+  }, [funds, tab, sort, marketIndices, openCode])
 
   // 汇总永远可见，但只统计当前 tab 的持仓——表头的数字必须和下面的行对得上
   const valued = visible.filter((f) => !uncovered(f))
@@ -358,6 +366,9 @@ export default function App() {
             {blindCount > 0 && <span className="warn-text"> · {blindCount} 只无覆盖，未计入今日估算</span>}
           </div>
         </header>
+
+        {/* 直接贴在汇总卡下面：总资产怎么走到今天这个数的，一眼就能看见 */}
+        {funds.length > 0 && <PortfolioChart points={history} hours={HISTORY_HOURS} />}
 
         {error && (
           <div className="glass card error" role="alert">

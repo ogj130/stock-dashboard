@@ -151,6 +151,20 @@ const MIGRATIONS: Array<(db: Db) => void> = [
       create index idx_estimate_ts on estimate_log(model_ts);
     `)
   },
+  // v4：组合市值时间序列，用于前端折线图。
+  // 5 秒轮询全量落库会达到每天 17k 行，所以写入侧做节流（见 estimate 路由）。
+  (db) => {
+    db.exec(`
+      create table portfolio_snapshot (
+        id integer primary key autoincrement,
+        ts_ms integer not null,
+        total_value real not null,
+        total_amount real not null,
+        fund_count integer not null
+      );
+      create index idx_portfolio_ts on portfolio_snapshot(ts_ms);
+    `)
+  },
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

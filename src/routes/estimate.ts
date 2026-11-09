@@ -9,6 +9,7 @@ import { fetchIndexWeights } from '../fund/indexWeight'
 import { fetchUsdCny, fetchUsdCnyFallback, loadCachedFx, saveFx, type FxRate } from '../sources/fx'
 import { createMarketIndicesCache, type MarketIndex } from '../sources/marketIndices'
 import { listFunds, upsertNav, type FundRow } from '../store/queries'
+import { recordSnapshot } from '../store/portfolio'
 import { CONFIG } from '../config'
 
 /**
@@ -152,6 +153,10 @@ export function registerEstimateRoutes(
       })),
       targetNavDate,
     )
+
+    // 折线图的原料。失败（表被删、磁盘满、锁超时）只记一条 warn：
+    // 曲线是锦上添花，不能因为它把整条估值变成 500。
+    recordSnapshotSafely(app, ctx.db, estimates)
 
     return {
       funds: estimates,
@@ -344,6 +349,30 @@ function logEstimates(
   } catch (err) {
     db.exec('rollback')
     throw err
+  }
+}
+
+/**
+ * 组合市值快照，给前端折线图。
+ *
+ * 两条硬约束：
+ * ① 空仓不落点——没有基金的 0 值会把曲线拉到底部，看起来像亏光了；
+ * ② 绝不把异常抛进请求路径——曲线是装饰，估值才是主业务，写库失败只记 warn。
+ *
+ * 节流在 recordSnapshot 里按「库里最新一行有多老」判定，30 秒一行。
+ */
+function recordSnapshotSafely(
+  app: FastifyInstance,
+  db: Db,
+  estimates: FundEstimate[],
+): void {
+  if (estimates.length === 0) return
+  try {
+    const value = estimates.reduce((sum, e) => sum + e.marketValue, 0)
+    const amount = estimates.reduce((sum, e) => sum + e.amount, 0)
+    recordSnapshot(db, { value, amount, fundCount: estimates.length })
+  } catch (err) {
+    app.log.warn({ err }, 'portfolio snapshot skipped')
   }
 }
 

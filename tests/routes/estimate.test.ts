@@ -161,3 +161,64 @@ describe('GET /api/estimate · marketIndices', () => {
     expect(body.marketIndices).toHaveLength(2)
   })
 })
+
+describe('GET /api/estimate · 组合快照落库与节流', () => {
+  interface Snap {
+    ts_ms: number
+    total_value: number
+    total_amount: number
+    fund_count: number
+  }
+  const snaps = (db: Db): Snap[] =>
+    db.prepare('select ts_ms, total_value, total_amount, fund_count from portfolio_snapshot order by ts_ms').all() as unknown as Snap[]
+
+  it('一次估值落一行，值等于响应里的汇总（市值/收益/只数）', async () => {
+    const { db, app } = makeApp([
+      { code: '270042', name: '纳指', indexKey: 'ndx' },
+      { code: '161125', name: '标普', indexKey: 'sp500' },
+    ])
+    const { body } = await get(app)
+    const stored = snaps(db)
+    expect(stored).toHaveLength(1)
+
+    const value = body.funds.reduce((s: number, f: { marketValue: number }) => s + f.marketValue, 0)
+    const amount = body.funds.reduce((s: number, f: { amount: number }) => s + f.amount, 0)
+    expect(stored[0]!.total_value).toBeCloseTo(value, 6)
+    expect(stored[0]!.total_amount).toBeCloseTo(amount, 6)
+    expect(stored[0]!.fund_count).toBe(2)
+  })
+
+  it('30 秒内的重复估值只落一行（5 秒轮询不该写出 17k 行/天）', async () => {
+    const { db, app } = makeApp([{ code: '270042', name: '纳指', indexKey: 'ndx' }])
+    await get(app)
+    await get(app)
+    await get(app)
+    expect(snaps(db)).toHaveLength(1)
+  })
+
+  it('最新一行老过 30 秒后重新落一行（真实跑会等 31s，这里把时间戳回拨）', async () => {
+    const { db, app } = makeApp([{ code: '270042', name: '纳指', indexKey: 'ndx' }])
+    await get(app)
+    db.prepare('update portfolio_snapshot set ts_ms = ts_ms - 31000').run()
+    await get(app)
+    const stored = snaps(db)
+    expect(stored).toHaveLength(2)
+    expect(stored[1]!.ts_ms).toBeGreaterThan(stored[0]!.ts_ms)
+  })
+
+  it('空仓不落点：没有基金就没有总资产可言', async () => {
+    const { db, app } = makeApp([])
+    const { status } = await get(app)
+    expect(status).toBe(200)
+    expect(snaps(db)).toHaveLength(0)
+  })
+
+  it('写库失败不污染请求路径：快照表被删也照样 200 且有基金明细', async () => {
+    const { db, app } = makeApp([{ code: '270042', name: '纳指', indexKey: 'ndx' }])
+    db.exec('drop table portfolio_snapshot')
+    const { status, body } = await get(app)
+    expect(status).toBe(200)
+    expect(body.funds).toHaveLength(1)
+    expect(body.funds[0].navPct).toBeGreaterThan(0)
+  })
+})

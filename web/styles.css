@@ -183,6 +183,110 @@ body {
   }
 }
 
+/* ---------- 总资产折线图 ---------- */
+
+/**
+ * 曲线本身是 viewBox="0 0 1000 100" + preserveAspectRatio="none" 的 SVG，铺满卡片宽度；
+ * 文字全部是 HTML 绝对定位的标签，因此不会被横向拉伸。
+ * 线的颜色靠 .up/.down/.flat 给的 currentColor 一路继承到 stroke 与 gradient。
+ */
+.chart {
+  padding: 12px 16px 8px;
+}
+
+.chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chart-title {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 角落里的窗口涨跌：数字 + 方向，一屏之内能读完 */
+.chart-delta {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+}
+
+.chart-plot {
+  position: relative;
+  height: 110px;
+  margin-top: 10px;
+}
+
+.chart-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+/* 最高点那条参照线：比卡片描边还淡一档，只是量尺不是装饰 */
+.chart-grid {
+  stroke: var(--stroke);
+  stroke-width: 1;
+}
+
+.chart-line {
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* min/max 标签挂在曲线外侧：max 悬在最高点之上、min 沉在最低点之下 */
+.chart-y {
+  position: absolute;
+  left: 2px;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1;
+  pointer-events: none;
+  /* 曲线可能从标签后面穿过，给一点暗影保证可读 */
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+}
+
+.chart-y.max {
+  transform: translateY(-100%);
+}
+
+/* 末端圆点用 HTML 画：SVG 的 circle 会被 preserveAspectRatio="none" 拉成椭圆 */
+.chart-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent);
+  pointer-events: none;
+}
+
+.chart-xaxis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.chart-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 26px 0;
+  text-align: center;
+  border-top: 1px dashed var(--stroke-soft);
+  margin-top: 8px;
+}
+
 /* ---------- 分板块 tab ---------- */
 
 .tabs {

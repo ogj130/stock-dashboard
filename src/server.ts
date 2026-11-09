@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { openDb } from './store/db'
 import { registerFundRoutes } from './routes/funds'
 import { registerEstimateRoutes } from './routes/estimate'
+import { registerPortfolioRoutes } from './routes/portfolio'
 import { QuoteRegistry } from './sources/registry'
 import { EastmoneySource, probeMarket } from './sources/eastmoney'
 import { MarketMap } from './sources/marketMap'
@@ -22,6 +23,7 @@ await app.register(fastifyStatic, {
 })
 
 registerFundRoutes(app, db)
+registerPortfolioRoutes(app, db)
 
 /**
  * 市场码来自持仓报文的 NEWTEXCH（免费、准确），由 ensureMarkets 提前灌进这张表。

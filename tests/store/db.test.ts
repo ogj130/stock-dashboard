@@ -7,11 +7,11 @@ import { openDb, migrate, SCHEMA_VERSION } from '../../src/store/db'
 
 const TABLES = [
   'constituent', 'estimate_log', 'fund', 'fx_cache',
-  'nav_history', 'quote_cache', 'quote_symbol_market', 'residual',
+  'nav_history', 'portfolio_snapshot', 'quote_cache', 'quote_symbol_market', 'residual',
 ]
 
 describe('db schema', () => {
-  it('建出全部 8 张表', () => {
+  it('建出全部 9 张表', () => {
     const db = openDb(':memory:')
     const names = db
       .prepare("select name from sqlite_master where type='table' and name not like 'sqlite_%'")
@@ -101,12 +101,68 @@ describe('db schema', () => {
     expect(rows[0].model_pct).toBeCloseTo(1.3, 6)
   })
 
-  it('v2 之后 SCHEMA_VERSION 为 3，且重复 migrate 不重复执行 v2/v3', () => {
+  it('v4 之后 SCHEMA_VERSION 为 4，且重复 migrate 不重复执行 v2/v3', () => {
     const db = openDb(':memory:')
-    expect(SCHEMA_VERSION).toBe(3)
+    expect(SCHEMA_VERSION).toBe(4)
     expect(() => migrate(db)).not.toThrow()
     const idx = db.prepare("select name from sqlite_master where type='index' and name='idx_estimate_day'").all()
     expect(idx).toHaveLength(1)
+  })
+})
+
+describe('db schema v4 · portfolio_snapshot', () => {
+  it('表与 ts 索引都在，且 user_version 真的推到 4', () => {
+    const db = openDb(':memory:')
+    const cols = db.prepare('pragma table_info(portfolio_snapshot)').all() as Array<{
+      name: string
+      notnull: number
+      type: string
+    }>
+    expect(cols.map((c) => c.name)).toEqual([
+      'id', 'ts_ms', 'total_value', 'total_amount', 'fund_count',
+    ])
+    // 四个业务字段都不许为空：缺 ts 画不了横轴，缺 value 画不了纵轴
+    expect(cols.filter((c) => c.name !== 'id').every((c) => c.notnull === 1)).toBe(true)
+
+    const idx = db
+      .prepare("select name from sqlite_master where type='index' and tbl_name='portfolio_snapshot'")
+      .all() as Array<{ name: string }>
+    expect(idx.map((r) => r.name)).toEqual(['idx_portfolio_ts'])
+
+    const row = db.prepare('pragma user_version').get() as { user_version: number }
+    expect(row.user_version).toBe(4)
+  })
+
+  it('快照表可插入并按 ts_ms 取回', () => {
+    const db = openDb(':memory:')
+    db.prepare(
+      'insert into portfolio_snapshot (ts_ms, total_value, total_amount, fund_count) values (?,?,?,?)',
+    ).run(1_700_000_000_000, 84_321.5, -12.34, 3)
+    const row = db.prepare('select * from portfolio_snapshot').get() as {
+      ts_ms: number
+      total_value: number
+      total_amount: number
+      fund_count: number
+    }
+    expect(row.ts_ms).toBe(1_700_000_000_000)
+    expect(row.total_value).toBeCloseTo(84_321.5, 6)
+    expect(row.total_amount).toBeCloseTo(-12.34, 6)
+    expect(row.fund_count).toBe(3)
+  })
+
+  it('从 v3 升级到 v4 时保留已有表与数据（增量迁移，不是重建）', () => {
+    const db = openDb(':memory:')
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
+    // 退回 v3 再迁一次，模拟「老库第一次见到 v4」
+    db.exec('drop table portfolio_snapshot')
+    db.exec('pragma user_version = 3')
+    migrate(db)
+
+    expect((db.prepare("select count(*) c from fund where code='X'").get() as any).c).toBe(1)
+    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(4)
+    expect(
+      db.prepare("select name from sqlite_master where type='table' and name='portfolio_snapshot'").all(),
+    ).toHaveLength(1)
   })
 })
 
@@ -149,7 +205,10 @@ describe('db schema v3 · covered_weight 浮点漂移（S5）', () => {
     db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
     insertLog(db, 0.66)
 
-    // 回退版本号再迁一次，强制重跑 v3 的表重建（copy → drop → rename）
+    // 回退版本号再迁一次，强制重跑 v3 的表重建（copy → drop → rename）。
+    // 重跑会连带重跑 v4，而 v4 是纯 create table（与 v1 一样靠版本号驱动、不用
+    // if not exists），所以先把 v4 的表拆掉，否则报到 "already exists"。
+    db.exec('drop table portfolio_snapshot')
     db.exec('pragma user_version = 2')
     migrate(db)
 
