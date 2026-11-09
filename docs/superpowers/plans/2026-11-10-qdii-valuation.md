@@ -157,7 +157,7 @@ git add -A && git commit -m "chore: 项目骨架与工具链"
 ```ts
 // tests/store/db.test.ts
 import { describe, it, expect } from 'vitest'
-import { openDb } from '../../src/store/db'
+import { openDb, migrate } from '../../src/store/db'
 
 describe('db', () => {
   it('建表后六张表都存在', () => {
@@ -674,7 +674,7 @@ git add -A && git commit -m "feat(sources): 腾讯校验源适配器"
 ```ts
 // tests/sources/cnbc.test.ts
 import { describe, it, expect, vi } from 'vitest'
-import { parseCnbc, CnbcSource } from '../../src/sources/cnbc'
+import { parseCnbc, parseStatus, CnbcSource } from '../../src/sources/cnbc'
 
 const RAW = {
   FormattedQuoteResult: {
@@ -1936,16 +1936,25 @@ import Fastify from 'fastify'
 import { registerFundRoutes } from '../../src/routes/funds'
 import { openDb } from '../../src/store/db'
 
+const noNetwork = {
+  latestNav: async () => 7.3714,
+  resolveHoldings: async () => ({ holdings: [], viaEtf: null, asOf: '2026-09-30' }),
+}
+
 describe('funds 路由', () => {
-  it('新增基金后能列出', async () => {
+  it('新增基金后能列出，且份额由市值/净值反推', async () => {
     const db = openDb(':memory:')
     const app = Fastify()
-    registerFundRoutes(app, db)
+    registerFundRoutes(app, db, noNetwork)
     const res = await app.inject({
       method: 'POST', url: '/api/funds',
       payload: { code: '270042', marketValue: 47932.65, profit: 12646.36 },
     })
     expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.fund.shares).toBeCloseTo(47932.65 / 7.3714, 4)
+    expect(body.fund.cost_basis).toBeCloseTo(47932.65 - 12646.36, 2)
+
     const list = await app.inject({ method: 'GET', url: '/api/funds' })
     expect(JSON.parse(list.body).funds).toHaveLength(1)
   })
@@ -2004,11 +2013,22 @@ export function getNavHistory(db: Db, code: string, limit = 90): Array<{ nav_dat
 import type { FastifyInstance } from 'fastify'
 import type { Db } from '../store/db'
 import { insertFund, listFunds } from '../store/queries'
-import { fetchPosition, resolveHoldingsFrom } from '../fund/holdings'
+import { fetchPosition, resolveHoldingsFrom, type ResolvedHoldings } from '../fund/holdings'
 
 interface AddBody { code: string; marketValue: number; profit?: number; shares?: number; costBasis?: number }
 
-export function registerFundRoutes(app: FastifyInstance, db: Db): void {
+/** 依赖注入：默认走真实网络，单测传入桩函数即可离线运行 */
+export interface FundRouteDeps {
+  latestNav?: (code: string) => Promise<number>
+  resolveHoldings?: (code: string) => Promise<ResolvedHoldings>
+}
+
+export function registerFundRoutes(app: FastifyInstance, db: Db, deps: FundRouteDeps = {}): void {
+  const getNav = deps.latestNav ?? latestNav
+  const getHoldings =
+    deps.resolveHoldings ??
+    ((code: string) => resolveHoldingsFrom(code, fetchPosition).catch(() => ({ holdings: [], viaEtf: null, asOf: '' })))
+
   app.get('/api/funds', async () => ({ funds: listFunds(db) }))
 
   app.post<{ Body: AddBody }>('/api/funds', async (req, reply) => {
@@ -2016,12 +2036,12 @@ export function registerFundRoutes(app: FastifyInstance, db: Db): void {
     if (!code) return reply.code(400).send({ error: 'code required' })
 
     // 未直接给份额时，用「市值 + 持有收益」反推，避免用户填长表单
-    const resolved = await resolveHoldingsFrom(code, fetchPosition).catch(() => ({ holdings: [] as any[], viaEtf: null, asOf: '' }))
-    const nav = await latestNav(code)
+    const nav = await getNav(code)
     const s = shares ?? (nav > 0 ? marketValue / nav : 0)
     const c = costBasis ?? Math.max(0, marketValue - profit)
 
     const fund = insertFund(db, { code, shares: s, costBasis: c })
+    const resolved = await getHoldings(code)
     return { fund, holdings: resolved.holdings.length, viaEtf: resolved.viaEtf }
   })
 
