@@ -44,12 +44,16 @@ export function estimateNav(input: EstimateInput): EstimateResult {
     // 因此 exposure=1、r_fx=0 时各项之和 == navPct
     breakdown:
       totalWeight > 0
-        ? holdings.map((h) => ({
-            symbol: h.symbol,
-            weight: h.weight,
-            pct: h.pct,
-            contribution: (h.weight / totalWeight) * h.pct * wCov * exposure,
-          }))
+        ? holdings
+            .map((h) => ({
+              symbol: h.symbol,
+              weight: h.weight,
+              pct: h.pct,
+              contribution: (h.weight / totalWeight) * h.pct * wCov * exposure,
+            }))
+            // 按贡献绝对值降序：展开明细时第一眼该看到「谁最影响这只基金」，
+            // 而不是代码字母序第一只
+            .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
         : [],
   }
 }
