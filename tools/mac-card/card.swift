@@ -13,7 +13,7 @@ import WebKit
 private let kAppURL = "http://127.0.0.1:5178/?compact=1"
 private let kFullURL = "http://127.0.0.1:5178/"
 private let kApiURL = "http://127.0.0.1:5178/api/estimate"
-private let kCardSize = NSSize(width: 320, height: 220)
+private let kCardSize = NSSize(width: 340, height: 480)   // 上方总览 + 中间曲线 + 下方可滚动的基金列表
 private let kOriginXKey = "cardOriginX"
 private let kOriginYKey = "cardOriginY"
 private let kMovedKey = "cardMoved"
