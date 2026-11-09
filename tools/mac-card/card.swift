@@ -1,79 +1,159 @@
 import Cocoa
 import WebKit
 
-// 桌面小卡片：无边框、半透明、始终置顶的 WKWebView 窗口。
-// 页面由后端提供（/?compact=1），所以卡片本身不含任何业务逻辑。
+// 菜单栏常驻的基金估值卡片。
+//
+// 两种状态：
+//   收起 —— 只在菜单栏显示一行数字（今日收益 %），像 Wi-Fi / 电池那样不占地方
+//   展开 —— 点一下菜单栏，在图标正下方弹出 320×220 的卡片；点外面自动收起
+//
+// 卡片仍可拖动（拖走后就不再跟随菜单栏，方便丢到副屏）；
+// 右键菜单里有「复位到菜单栏下方」把位置还给菜单栏。
 
 private let kAppURL = "http://127.0.0.1:5178/?compact=1"
+private let kFullURL = "http://127.0.0.1:5178/"
+private let kApiURL = "http://127.0.0.1:5178/api/estimate"
 private let kCardSize = NSSize(width: 320, height: 220)
 private let kOriginXKey = "cardOriginX"
 private let kOriginYKey = "cardOriginY"
-private let kVisibleKey = "cardVisible"
+private let kMovedKey = "cardMoved"
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var statusItem: NSStatusItem!
     private var retryTimer: Timer?
-    private var reloadTimer: Timer?
+    private var titleTimer: Timer?
     private var showingError = false
+    private var lastPct: Double = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildStatusItem()
         buildWindow()
         loadApp()
-
-        // 每 5 分钟整页重载一次：长时间常驻后 WebContent 进程可能被系统回收成白屏
-        reloadTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            self?.loadApp()
-        }
+        startTitlePolling()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowDidResignKey(_:)),
+            name: NSWindow.didResignKeyNotification, object: nil
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         saveOrigin()
         retryTimer?.invalidate()
-        reloadTimer?.invalidate()
+        titleTimer?.invalidate()
     }
 
     // MARK: - 菜单栏
 
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "📈"
-        statusItem.button?.toolTip = "美股基金估值卡片"
-
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "显示 / 隐藏", action: #selector(toggleWindow), keyEquivalent: "t"))
-        menu.addItem(NSMenuItem(title: "立即刷新", action: #selector(reloadNow), keyEquivalent: "r"))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
+        guard let button = statusItem.button else { return }
+        button.title = "…"
+        button.toolTip = "美股基金估值"
+        button.target = self
+        button.action = #selector(statusItemClicked(_:))
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
-    @objc private func toggleWindow() {
-        if window.isVisible {
-            window.orderOut(nil)
-            UserDefaults.standard.set(false, forKey: kVisibleKey)
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showContextMenu()
         } else {
-            window.orderFrontRegardless()
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
-            UserDefaults.standard.set(true, forKey: kVisibleKey)
+            toggleCard()
         }
     }
 
-    @objc private func reloadNow() {
-        loadApp()
+    private func showContextMenu() {
+        let menu = NSMenu()
+        let items: [(String, Selector, String)] = [
+            ("打开完整页面", #selector(openFullPage), "o"),
+            ("立即刷新", #selector(reloadNow), "r"),
+            ("复位到菜单栏下方", #selector(resetCardPosition), ""),
+        ]
+        for (title, action, key) in items {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        // 临时挂上菜单再点一次：这样右键能出菜单，而左键仍是自己处理
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
     }
 
-    @objc private func quit() {
-        NSApp.terminate(nil)
+    /// 每 5 秒取一次总览，把「今日收益百分比」写进菜单栏
+    private func startTitlePolling() {
+        updateStatusTitle()
+        titleTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.updateStatusTitle()
+        }
     }
 
-    // MARK: - 窗口
+    private func updateStatusTitle() {
+        guard let url = URL(string: kApiURL) else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let self else { return }
+            guard
+                let data,
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let funds = obj["funds"] as? [[String: Any]]
+            else {
+                DispatchQueue.main.async { self.setTitle(text: "离线", pct: nil) }
+                return
+            }
+
+            var total = 0.0
+            var amount = 0.0
+            for f in funds {
+                total += (f["marketValue"] as? Double) ?? 0
+                amount += (f["amount"] as? Double) ?? 0
+            }
+            // 百分比以「昨收市值」为分母，与券商 App 的当日涨幅同口径
+            let base = total - amount
+            let pct = base > 0 ? amount / base * 100 : 0
+
+            DispatchQueue.main.async {
+                self.lastPct = pct
+                if funds.isEmpty {
+                    self.setTitle(text: "无持仓", pct: nil)
+                } else {
+                    self.setTitle(text: String(format: "%+.2f%%", pct), pct: pct)
+                }
+            }
+        }.resume()
+    }
+
+    private func setTitle(text: String, pct: Double?) {
+        guard let button = statusItem.button else { return }
+        let color: NSColor
+        if let p = pct {
+            color = p > 0 ? NSColor.systemRed : (p < 0 ? NSColor.systemGreen : NSColor.labelColor)
+        } else {
+            color = NSColor.secondaryLabelColor
+        }
+        button.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [
+                .foregroundColor: color,
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+            ]
+        )
+    }
+
+    // MARK: - 卡片窗口
 
     private func buildWindow() {
-        let origin = savedOrigin() ?? defaultOrigin()
+        let origin = savedOrigin() ?? originBelowStatusItem()
 
         window = NSWindow(
             contentRect: NSRect(origin: origin, size: kCardSize),
@@ -84,53 +164,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
-        window.level = .floating                     // 始终浮在其他窗口之上
-        window.isMovableByWindowBackground = true    // 拖动卡片任意位置即可移动
+        window.level = .statusBar
+        window.isMovableByWindowBackground = true
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.isReleasedWhenClosed = false
 
         let config = WKWebViewConfiguration()
         webView = WKWebView(frame: NSRect(origin: .zero, size: kCardSize), configuration: config)
         webView.navigationDelegate = self
-        // 关键：让 WKWebView 自身透明，页面才能画出圆角玻璃面板
         webView.setValue(false, forKey: "drawsBackground")
         webView.wantsLayer = true
         webView.layer?.cornerRadius = 16
         webView.layer?.masksToBounds = true
-
         window.contentView = webView
 
+        let dblclick = NSClickGestureRecognizer(target: self, action: #selector(openFullPage))
+        dblclick.numberOfClicksRequired = 2
+        webView.addGestureRecognizer(dblclick)
+
         NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification,
-            object: window,
-            queue: .main
+            forName: NSWindow.didMoveNotification, object: window, queue: .main
         ) { [weak self] _ in
             self?.saveOrigin()
+            UserDefaults.standard.set(true, forKey: kMovedKey)
         }
+    }
 
-        if UserDefaults.standard.object(forKey: kVisibleKey) as? Bool ?? true {
-            window.orderFrontRegardless()
+    /// 贴在菜单栏图标正下方，水平居中于图标，并夹在屏幕可见区内
+    private func originBelowStatusItem() -> NSPoint {
+        guard
+            let button = statusItem.button,
+            let buttonWindow = button.window,
+            let screen = buttonWindow.screen
+        else {
+            let v = NSScreen.main?.visibleFrame ?? .zero
+            return NSPoint(x: v.maxX - kCardSize.width - 24, y: v.maxY - kCardSize.height - 24)
         }
-        // LSUIElement（无 Dock 图标）的应用不会自动激活，不显式激活的话
-        // 窗口虽然 orderFront 了但可能被压在别的窗口后面，看起来就像「没打开」
+        let rectOnScreen = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let cx = rectOnScreen.midX - kCardSize.width / 2
+        let x = min(max(cx, screen.visibleFrame.minX + 8), screen.visibleFrame.maxX - kCardSize.width - 8)
+        return NSPoint(x: x, y: rectOnScreen.minY - kCardSize.height - 6)
+    }
+
+    @objc private func toggleCard() {
+        if window.isVisible {
+            window.orderOut(nil)
+            return
+        }
+        if !UserDefaults.standard.bool(forKey: kMovedKey) {
+            window.setFrameOrigin(originBelowStatusItem())
+        }
+        window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func defaultOrigin() -> NSPoint {
-        guard let screen = NSScreen.main else { return NSPoint(x: 100, y: 100) }
-        let v = screen.visibleFrame
-        // 默认贴右上角，留 24pt 边距
-        return NSPoint(x: v.maxX - kCardSize.width - 24, y: v.maxY - kCardSize.height - 24)
+    @objc private func resetCardPosition() {
+        UserDefaults.standard.set(false, forKey: kMovedKey)
+        window.setFrameOrigin(originBelowStatusItem())
+        window.orderFrontRegardless()
+    }
+
+    @objc private func windowDidResignKey(_ note: Notification) {
+        guard let w = note.object as? NSWindow, w == window else { return }
+        if window.isVisible { window.orderOut(nil) }
     }
 
     private func savedOrigin() -> NSPoint? {
         let d = UserDefaults.standard
+        guard d.bool(forKey: kMovedKey) else { return nil }
         guard d.object(forKey: kOriginXKey) != nil, d.object(forKey: kOriginYKey) != nil else { return nil }
         let p = NSPoint(x: d.double(forKey: kOriginXKey), y: d.double(forKey: kOriginYKey))
-        // 上次可能被拖到副屏或屏幕外，此时必须回落，否则「启动了但看不见」
         let rect = NSRect(origin: p, size: kCardSize)
-        let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
-        return onScreen ? p : nil
+        return NSScreen.screens.contains { $0.visibleFrame.intersects(rect) } ? p : nil
     }
 
     private func saveOrigin() {
@@ -138,6 +244,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         let d = UserDefaults.standard
         d.set(w.frame.origin.x, forKey: kOriginXKey)
         d.set(w.frame.origin.y, forKey: kOriginYKey)
+    }
+
+    // MARK: - 动作
+
+    @objc private func openFullPage() {
+        guard let url = URL(string: kFullURL) else { return }
+        NSWorkspace.shared.open(url)
+        window.orderOut(nil)
+    }
+
+    @objc private func reloadNow() {
+        loadApp()
+    }
+
+    @objc private func quit() {
+        NSApp.terminate(nil)
     }
 
     // MARK: - 加载
@@ -148,21 +270,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10))
     }
 
-    // 后端没起来时给一句人话，而不是一片空白
     private func showOfflineCard() {
         retryTimer?.invalidate()
         retryTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            if self.showingError { self.loadApp() }
+            guard let self, self.showingError else { return }
+            self.loadApp()
         }
-
         let html = """
         <!doctype html><meta charset="utf-8">
         <style>
           html,body{margin:0;height:100%;background:transparent}
           .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
                 font:13px/1.5 -apple-system,"PingFang SC",sans-serif;color:#8892a6;
-                background:rgba(16,22,36,.92);border-radius:16px;
+                background:rgba(16,22,36,.94);border-radius:16px;
                 box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
           .t{color:#e8edf7;font-weight:600;margin-bottom:6px}
           .s{font-size:11px;opacity:.8}
@@ -177,7 +297,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        // loadHTMLString 也会走进来，用标志位避免自己套自己
         if showingError { return }
         showingError = true
         showOfflineCard()
@@ -191,6 +310,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-// .accessory：不占 Dock、不抢菜单栏焦点，只留一个状态栏图标
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.accessory)   // 不占 Dock，只留菜单栏
 app.run()
