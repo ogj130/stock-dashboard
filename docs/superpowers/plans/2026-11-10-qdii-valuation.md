@@ -2846,6 +2846,15 @@ Expected: PASS 3 passed
 
 - [ ] **Step 6: 实现 `src/routes/estimate.ts`（带缓存的编排层）**
 
+> **产品口径已定：港股（`market === 116`）不参与估值**。
+> 理由：① 引擎只有一条 USD/CNY 汇率，缺 HKD/CNY，港币资产会被错误地按美元折算；
+> ② 港股与美股历法不同，港股休市日会拿到上一交易日的 `pct`，被重复计入涨跌；
+> ③ 这类 QDII 的净值波动主要来自美股持仓。
+> 所以在把 Holdings 送去取价之前**先按 `market === 116` 过滤掉**，并在返回结果里如实报告
+> `excluded: { hk: number }`，让界面能显示"含港股 N 只，已排除"。
+> 宁可覆盖率低一点，也不能让汇率与历法混着算。
+
+
 ```ts
 import type { FastifyInstance } from 'fastify'
 import type { Db } from '../store/db'
@@ -2864,7 +2873,8 @@ interface Ctx {
   registry: QuoteRegistry
   status: () => Promise<MarketStatus>
   /** 取行情前必须先解析 symbol→市场码，否则东财用默认前缀会让整批返回 null */
-  ensureMarkets: (symbols: string[]) => Promise<void>
+  /** known 是持仓报文里直接给出的 NEWTEXCH 映射；缺的部分再走探测 */
+  ensureMarkets: (symbols: string[], known: Record<string, number>) => Promise<void>
 }
 
 export function registerEstimateRoutes(app: FastifyInstance, ctx: Ctx): void {
@@ -2992,10 +3002,12 @@ import { registerEstimateRoutes } from './routes/estimate'
 import { derivePhaseLocal } from './engine/phase'
 
 const cnbc = new CnbcSource()
-const marketMap = new MarketMap(db, probeMarket)
+// 市场码来自持仓报文的 NEWTEXCH（免费、准确），由 ensureMarkets 提前灌进 map。
+// 绝不要写 `?? MARKET.NASDAQ` 兜底——实测 162411（全 NYSE）用默认 105 会拿到 0/10。
+const symbolMarket = new Map<string, number>()
+const marketMap = new MarketMap(db, probeMarket)   // 仅作没有 NEWTEXCH 时的兜底
 const registry = new QuoteRegistry([
-  // marketOf 从持久映射里取，取不到才退回 NASDAQ；映射由 ensureMarkets 提前填好
-  new EastmoneySource((s) => marketMap.get(s) ?? MARKET.NASDAQ),
+  new EastmoneySource((s) => symbolMarket.get(s) ?? marketMap.get(s)),
   new TencentSource(),
   cnbc,
   new SinaSource(),
@@ -3004,8 +3016,13 @@ const registry = new QuoteRegistry([
 registerEstimateRoutes(app, {
   db,
   registry,
-  ensureMarkets: async (symbols) => {
-    await marketMap.resolve(symbols)
+  ensureMarkets: async (symbols, known) => {
+    for (const [sym, market] of Object.entries(known)) symbolMarket.set(sym, market)
+    const unknown = symbols.filter((s) => !symbolMarket.has(s))
+    if (unknown.length > 0) {
+      const probed = await marketMap.resolve(unknown)
+      for (const [sym, market] of Object.entries(probed)) symbolMarket.set(sym, market)
+    }
   },
   // CNBC 拿不到状态时退回本地美东时钟，不默认 CLOSED（会把盘中误判成已收盘）
   status: async () => {
