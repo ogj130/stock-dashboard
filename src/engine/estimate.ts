@@ -29,7 +29,9 @@ export function estimateNav(input: EstimateInput): EstimateResult {
   const wCov = Math.min(1, Math.max(0, totalWeight))
   const wUnc = Math.max(0, 1 - wCov)
   const rUnc = residualPct ?? 0
-  const rStock = wCov * weighted + wUnc * rUnc
+  // 有官方指数涨跌就直接用它：自算成分加权与官方口径差 0.2pp 量级，
+  // 对这只基金来说那是 MAE 预算的 1.4 倍，没必要自己近似一遍
+  const rStock = input.indexPct !== undefined ? input.indexPct : wCov * weighted + wUnc * rUnc
 
   const rFx = fxPrev > 0 ? fxNow / fxPrev - 1 : 0
   const rAsset = (1 + rStock / 100) * (1 + rFx) - 1

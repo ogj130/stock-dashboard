@@ -30,6 +30,13 @@ export interface Holding {
 
 export interface EstimateInput {
   holdings: Array<Holding & { pct: number }>
+  /**
+   * 跟踪指数的官方涨跌幅（百分数）。给了就用它代替成分加权——
+   * 实测自算纯市值加权与官方 NDX 差 0.206pp，比 MAE 预算还大，
+   * 因为 NDX 是修正市值加权（有 capping）且成分名单有时点差。
+   * 指数基金应尽量走这条；主动型无指数才退回成分加权。
+   */
+  indexPct?: number
   fxNow: number
   fxPrev: number
   exposure: number

@@ -15,6 +15,8 @@ export interface BuildInput {
   lagDays: number
   phase: Phase
   residualPct?: number
+  /** 跟踪指数的官方涨跌幅（百分数）；有则替代成分加权 */
+  indexPct?: number
   /** 取价前被剔除的港股数量（route 过滤，这里只负责如实上报） */
   excludedHk?: number
   /** 权重来源：指数全量成分（≈100% 覆盖）/ 基金披露的前十大（40~70%）/ 无持仓 */
@@ -72,6 +74,7 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     fxPrev: input.fxPrev,
     exposure: input.exposure,
     residualPct: input.residualPct,
+    indexPct: input.indexPct,
   })
 
   const base = input.shares * input.nav

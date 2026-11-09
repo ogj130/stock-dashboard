@@ -137,6 +137,7 @@ export function registerEstimateRoutes(
         phase,
         excludedHk: r.excludedHk,
         weightsFrom: r.weightsFrom,
+        indexPct: indexPctFor(r.fund.index_key, marketIndices),
         board: boardOf(r.fund.index_key),
       }),
     )
@@ -344,6 +345,21 @@ function logEstimates(
     db.exec('rollback')
     throw err
   }
+}
+
+/** index_key → 大盘行情里的指数代码，用于取官方涨跌幅 */
+const INDEX_SYMBOL: Record<string, string> = { ndx: 'NDX', sp500: 'SPX' }
+
+/**
+ * 指数基金直接用官方指数涨跌，不再自算成分加权。
+ * 实测自算的纯市值加权与官方 NDX 差 0.206pp（NDX 是修正市值加权、有 capping），
+ * 而验收预算是 0.15pp —— 自算在这一层是负贡献。
+ */
+function indexPctFor(key: string | null, list: MarketIndex[]): number | undefined {
+  if (!key) return undefined
+  const sym = INDEX_SYMBOL[key]
+  if (!sym) return undefined
+  return list.find((m) => m.symbol === sym)?.pct
 }
 
 function latestNavOf(db: Db, code: string): number {
