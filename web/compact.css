@@ -216,6 +216,13 @@ html.cc-mode body {
   display: none;
 }
 
+/* Chrome 130+ 会把「可滚动容器」自动放进 Tab 序列，一旦 Tab 到它就会冒出蓝色焦点圈。
+   这个卡片不接受键盘操作，也不该出现任何焦点圈，所以显式关掉。 */
+.cc-list:focus,
+.cc-list:focus-visible {
+  outline: none;
+}
+
 /* 一行一只基金，不换行：这是扫一眼用的，不是表格。22px 是 11px 字能站住的最小行高 */
 .cc-row {
   display: flex;
