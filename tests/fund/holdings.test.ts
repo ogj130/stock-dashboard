@@ -86,4 +86,28 @@ describe('holdings', () => {
     })
     expect(p.holdings.map((h) => h.market)).toEqual([undefined, undefined, undefined, undefined])
   })
+
+  it('有 ETFCODE 时优先取 ETF 持仓，而不是基金自持的那点零头', async () => {
+    // 实测 017091：ETFCODE=159509，同时带 10 只自营小仓位（每只 ~1.3%，合计 8%）
+    const SELF: PositionResp = {
+      Datas: {
+        fundStocks: [{ GPDM: 'AAPL', GPJC: '苹果', JZBL: '1.37' }],
+        fundboods: [], fundfofs: [], ETFCODE: '159509',
+      },
+      Expansion: '2026-09-30',
+    }
+    const ETF: PositionResp = {
+      Datas: {
+        fundStocks: [
+          { GPDM: 'NVDA', GPJC: '英伟达', JZBL: '12.5' },
+          { GPDM: 'MSFT', GPJC: '微软', JZBL: '11.0' },
+        ],
+        fundboods: [], fundfofs: [], ETFCODE: null,
+      },
+      Expansion: '2026-09-30',
+    }
+    const r = await resolveHoldingsFrom('017091', async (c) => (c === '017091' ? SELF : ETF))
+    expect(r.viaEtf).toBe('159509')
+    expect(r.holdings.map((h) => h.symbol)).toEqual(['NVDA', 'MSFT'])
+  })
 })

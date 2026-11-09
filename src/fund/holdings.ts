@@ -92,7 +92,12 @@ export interface ResolvedHoldings {
 
 /**
  * 基金代码 → 持仓。
- * 联接基金自身不持股，接口只返回 ETFCODE，需再查一次目标 ETF。
+ *
+ * **ETF 优先，而不是"有持仓就用"**。实测 017091（景顺长城纳指科技联接）同时返回
+ * `ETFCODE: 159509` 和 10 只自营小仓位（每只 ~1.3%，合计仅 8%）——那份零头是
+ * 联接基金为应对赎回持有的直接股票，主体资产在目标 ETF 里。若按「有持仓就直接用」，
+ * 覆盖率会掉到 8%，估值几乎归零。所以只要给了 ETFCODE 就先查 ETF。
+ *
  * 递归深度限制 1 层：目前不存在 ETF 套 ETF 的情形，超限即返回空，避免环形请求。
  */
 export async function resolveHoldingsFrom(
@@ -100,12 +105,15 @@ export async function resolveHoldingsFrom(
   fetcher: (code: string) => Promise<PositionResp>,
 ): Promise<ResolvedHoldings> {
   const first = parsePosition(await fetcher(code))
-  if (first.holdings.length > 0) {
-    return { holdings: first.holdings, viaEtf: null, asOf: first.asOf }
+
+  if (first.targetEtf) {
+    const second = parsePosition(await fetcher(first.targetEtf))
+    if (second.holdings.length > 0) {
+      return { holdings: second.holdings, viaEtf: first.targetEtf, asOf: second.asOf }
+    }
   }
-  if (!first.targetEtf) {
-    return { holdings: [], viaEtf: null, asOf: first.asOf }
-  }
-  const second = parsePosition(await fetcher(first.targetEtf))
-  return { holdings: second.holdings, viaEtf: first.targetEtf, asOf: second.asOf }
+
+  // 没有目标 ETF（或 ETF 也查不到）时才用基金自身披露的持仓：
+  // 主动型 QDII、以及直接持股的指数基金走这条
+  return { holdings: first.holdings, viaEtf: null, asOf: first.asOf }
 }
