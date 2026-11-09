@@ -69,3 +69,28 @@ export class EastmoneySource implements QuoteSource {
     return normalizeEastmoney((await res.json()) as EmResponse)
   }
 }
+
+interface ProbeResponse {
+  rc?: number
+  data?: { total?: number } | null
+}
+
+/**
+ * 逐市场试一只票，返回能查到它的市场码；三个都查不到返回 null。
+ * 必须逐只探测：NYSE 的票放到 105. 前缀会整批返回 data:null（不抛错），
+ * 而 105.V 又会被接口自动纠正成 106，随机抽样根本发现不了。
+ */
+export async function probeMarket(symbol: string): Promise<number | null> {
+  for (const market of [MARKET.NASDAQ, MARKET.NYSE, MARKET.AMEX]) {
+    try {
+      const url = `${BASE}?secids=${toSecid(symbol, market)}&fields=f12`
+      const res = await fetch(url, { headers: { 'User-Agent': UA } })
+      if (!res.ok) continue
+      const body = (await res.json()) as ProbeResponse
+      if (body?.rc === 0 && (body.data?.total ?? 0) > 0) return market
+    } catch {
+      // 单个市场探测失败不影响其他市场
+    }
+  }
+  return null
+}
