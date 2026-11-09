@@ -71,4 +71,41 @@ describe('db schema', () => {
     expect(() => stmt.run('B', 1, 9)).toThrow(/CHECK/i)
     expect(() => stmt.run('C', 1, 0.95)).not.toThrow()
   })
+
+  it('同一基金同一净值日同一相位只允许一行（v2 唯一约束）', () => {
+    const db = openDb(':memory:')
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
+    const stmt = db.prepare(
+      `insert into estimate_log
+         (fund_code, model_ts, target_nav_date, phase, model_pct, model_amount, covered_weight, lag_days, exposure)
+       values (?,?,?,?,?,?,?,?,?)`,
+    )
+    stmt.run('X', 1, '2026-11-06', 'settled', 1.4, 0, 0.66, 1, 0.95)
+    expect(() => stmt.run('X', 2, '2026-11-06', 'settled', 1.5, 0, 0.66, 1, 0.95)).toThrow(/UNIQUE/i)
+  })
+
+  it('同一 key 用 upsert 覆盖，行数不变且值更新', () => {
+    const db = openDb(':memory:')
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
+    const stmt = db.prepare(
+      `insert into estimate_log
+         (fund_code, model_ts, target_nav_date, phase, model_pct, model_amount, covered_weight, lag_days, exposure)
+       values (?,?,?,?,?,?,?,?,?)
+       on conflict(fund_code, target_nav_date, phase) do update set
+         model_ts=excluded.model_ts, model_pct=excluded.model_pct`,
+    )
+    stmt.run('X', 1, '2026-11-06', 'live', 1.0, 0, 0.66, 1, 0.95)
+    stmt.run('X', 2, '2026-11-06', 'live', 1.3, 0, 0.66, 1, 0.95)
+    const rows = db.prepare("select model_pct from estimate_log where phase='live'").all() as any[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].model_pct).toBeCloseTo(1.3, 6)
+  })
+
+  it('v2 之后 SCHEMA_VERSION 为 2，且重复 migrate 不重复执行 v2', () => {
+    const db = openDb(':memory:')
+    expect(SCHEMA_VERSION).toBe(2)
+    expect(() => migrate(db)).not.toThrow()
+    const idx = db.prepare("select name from sqlite_master where type='index' and name='idx_estimate_day'").all()
+    expect(idx).toHaveLength(1)
+  })
 })

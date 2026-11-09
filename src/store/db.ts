@@ -108,6 +108,22 @@ const MIGRATIONS: Array<(db: Db) => void> = [
       );
     `)
   },
+  // v2：估算留痕按 (基金, 净值日, 相位) 唯一。
+  // 5 秒轮询如果每跳都追加，单基金每天 4680 行、全年约 70GB；
+  // 而且对账时无法确定"哪一行才是收盘估值"。改为原地覆盖，每天最多两行。
+  (db) => {
+    db.exec(`
+      delete from estimate_log as a where exists (
+        select 1 from estimate_log b
+        where a.fund_code = b.fund_code
+          and a.target_nav_date = b.target_nav_date
+          and a.phase = b.phase
+          and a.id < b.id
+      );
+      create unique index idx_estimate_day
+        on estimate_log(fund_code, target_nav_date, phase);
+    `)
+  },
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length
