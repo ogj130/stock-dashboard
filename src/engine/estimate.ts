@@ -52,9 +52,8 @@ export function estimateNav(input: EstimateInput): EstimateResult {
               pct: h.pct,
               contribution: (h.weight / totalWeight) * h.pct * wCov * exposure,
             }))
-            // 按贡献绝对值降序：展开明细时第一眼该看到「谁最影响这只基金」，
-            // 而不是代码字母序第一只
-            .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+            // 按持仓权重降序：看持仓时先看仓位大的，这是用户看基金的直觉顺序
+            .sort((a, b) => b.weight - a.weight)
         : [],
   }
 }
