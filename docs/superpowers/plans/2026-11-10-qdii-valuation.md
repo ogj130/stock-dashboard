@@ -2640,6 +2640,8 @@ interface Ctx {
   db: Db
   registry: QuoteRegistry
   status: () => Promise<MarketStatus>
+  /** 取行情前必须先解析 symbol→市场码，否则东财用默认前缀会让整批返回 null */
+  ensureMarkets: (symbols: string[]) => Promise<void>
 }
 
 export function registerEstimateRoutes(app: FastifyInstance, ctx: Ctx): void {
@@ -2660,6 +2662,9 @@ export function registerEstimateRoutes(app: FastifyInstance, ctx: Ctx): void {
       })),
     )
     const symbols = [...new Set(perFund.flatMap((p) => p.resolved.holdings.map((h) => h.symbol)))]
+    // 必须先解析市场码再取行情：东财对 NYSE 的票若用了 NASDAQ 前缀，
+    // 不是丢那一只，而是整批返回 data:null（实测 rc=102）
+    if (symbols.length > 0) await ctx.ensureMarkets(symbols)
     const quotes = await ctx.registry.getQuotes(symbols, { crossCheck: false })
 
     const estimates = perFund.map(({ fund, resolved }) =>
@@ -2742,7 +2747,8 @@ function latestNavOf(db: Db, code: string): number {
 
 ```ts
 import { QuoteRegistry } from './sources/registry'
-import { EastmoneySource } from './sources/eastmoney'
+import { EastmoneySource, probeMarket, MARKET } from './sources/eastmoney'
+import { MarketMap } from './sources/marketMap'
 import { TencentSource } from './sources/tencent'
 import { CnbcSource } from './sources/cnbc'
 import { SinaSource } from './sources/sina'
@@ -2750,8 +2756,10 @@ import { registerEstimateRoutes } from './routes/estimate'
 import { derivePhaseLocal } from './engine/phase'
 
 const cnbc = new CnbcSource()
+const marketMap = new MarketMap(db, probeMarket)
 const registry = new QuoteRegistry([
-  new EastmoneySource(),
+  // marketOf 从持久映射里取，取不到才退回 NASDAQ；映射由 ensureMarkets 提前填好
+  new EastmoneySource((s) => marketMap.get(s) ?? MARKET.NASDAQ),
   new TencentSource(),
   cnbc,
   new SinaSource(),
@@ -2760,6 +2768,9 @@ const registry = new QuoteRegistry([
 registerEstimateRoutes(app, {
   db,
   registry,
+  ensureMarkets: async (symbols) => {
+    await marketMap.resolve(symbols)
+  },
   // CNBC 拿不到状态时退回本地美东时钟，不默认 CLOSED（会把盘中误判成已收盘）
   status: async () => {
     try {
