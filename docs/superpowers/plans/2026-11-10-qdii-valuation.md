@@ -2697,10 +2697,20 @@ function etDate(now: Date = new Date()): string {
  * target_nav_date 记录这条估算指向哪个净值日——这是让 reconcile 能选对行的关键。
  */
 function logEstimates(db: Db, phase: string, estimates: FundEstimate[], targetNavDate: string): void {
+  // 必须 upsert：v2 迁移给 (fund_code, target_nav_date, phase) 加了唯一索引，
+  // 5 秒轮询的第二次插入若不 on conflict 就直接撞 UNIQUE 约束。
+  // 覆盖而非追加也让每天每基金最多两行（live + settled）。
   const stmt = db.prepare(
     `insert into estimate_log
        (fund_code, model_ts, target_nav_date, phase, model_pct, model_amount, covered_weight, lag_days, exposure)
-     values (?,?,?,?,?,?,?,?,?)`,
+     values (?,?,?,?,?,?,?,?,?)
+     on conflict(fund_code, target_nav_date, phase) do update set
+       model_ts=excluded.model_ts,
+       model_pct=excluded.model_pct,
+       model_amount=excluded.model_amount,
+       covered_weight=excluded.covered_weight,
+       lag_days=excluded.lag_days,
+       exposure=excluded.exposure`,
   )
   const now = Date.now()
   const params = db.prepare('select lag_days, exposure from fund where code = ?')
