@@ -1633,6 +1633,20 @@ describe('indexWeight', () => {
     expect(w.reduce((s, x) => s + x.weight, 0)).toBeCloseTo(1, 6)
   })
 
+  it('双股权类公司只计一次市值（GOOGL/GOOG 不能各算一遍）', () => {
+    const w = weightsFromMarketCap([
+      { symbol: 'GOOGL', marketCap: 1000, name: 'Alphabet Inc.' },
+      { symbol: 'GOOG', marketCap: 1000, name: 'Alphabet Inc.' },
+      { symbol: 'AAPL', marketCap: 3000, name: 'Apple Inc.' },
+    ])
+    const total = w.reduce((s, x) => s + x.weight, 0)
+    expect(total).toBeCloseTo(1, 6)
+    // 公司市值 1000 均分给两个类别：各 500；AAPL 3000 → 总和 4000
+    expect(w.find((x) => x.symbol === 'GOOGL')!.weight).toBeCloseTo(0.125, 6)
+    expect(w.find((x) => x.symbol === 'GOOG')!.weight).toBeCloseTo(0.125, 6)
+    expect(w.find((x) => x.symbol === 'AAPL')!.weight).toBeCloseTo(0.75, 6)
+  })
+
   it('市值缺失或为 0 的成分被剔除，避免 NaN 权重', () => {
     const w = weightsFromMarketCap([
       { symbol: 'A', marketCap: 100 },
@@ -1677,12 +1691,46 @@ export function parseNasdaqList(raw: any): CapRow[] {
     .filter((r) => r.symbol && Number.isFinite(r.marketCap) && r.marketCap > 0)
 }
 
-/** 市值加权近似。纳斯达克 100 为修正市值加权，与本算法存在可度量偏差，需在回测中确认。 */
-export function weightsFromMarketCap(rows: Array<{ symbol: string; marketCap: number }>): Holding[] {
+/**
+ * 市值加权近似。
+ *
+ * **双股权类去重（必须）**：api.nasdaq.com 的 `marketCap` 是「公司整体市值」，多类别公司
+ * （GOOGL/GOOG、FOX/FOXA、NWS/NWSA）会**每个 symbol 各返回一次同样的公司市值**。
+ * 直接求和会把 Alphabet 算成 16.45%（真实约 9.01%，超 1.83 倍），并让其余成分被过大的
+ * 分母等比压低约 9%（实测 AAPL −1.13pp、NVDA −0.85pp、MSFT −0.78pp）。
+ * 处理：按公司名分组，组内市值均分给各 symbol——同类股本相近时这等价于按股本拆分，
+ * 实测能让 Alphabet 合计回到约 9.0%，与第三方权重表吻合。
+ *
+ * 其他偏差（纳指 100 用的是修正市值加权，有 capping）需在 Task 14 回测中单独计量，
+ * 不要和这里的去重混成一个数字。
+ */
+export function weightsFromMarketCap(
+  rows: Array<{ symbol: string; marketCap: number; name?: string }>,
+): Holding[] {
   const valid = rows.filter((r) => Number.isFinite(r.marketCap) && r.marketCap > 0)
-  const total = valid.reduce((s, r) => s + r.marketCap, 0)
+  if (valid.length === 0) return []
+
+  const groups = new Map<string, typeof valid>()
+  for (const r of valid) {
+    const key = (r.name?.trim() || r.symbol).toLowerCase()
+    const list = groups.get(key)
+    if (list) list.push(r)
+    else groups.set(key, [r])
+  }
+
+  const adjusted: Array<{ symbol: string; name: string; marketCap: number }> = []
+  for (const list of groups.values()) {
+    // 组内取最大作为公司市值（数据源对同类给的值可能略有差异），再均分回各 symbol
+    const companyCap = Math.max(...list.map((r) => r.marketCap))
+    const per = companyCap / list.length
+    for (const r of list) {
+      adjusted.push({ symbol: r.symbol, name: r.name ?? r.symbol, marketCap: per })
+    }
+  }
+
+  const total = adjusted.reduce((s, r) => s + r.marketCap, 0)
   if (total <= 0) return []
-  return valid.map((r) => ({ symbol: r.symbol, name: r.symbol, weight: r.marketCap / total }))
+  return adjusted.map((r) => ({ symbol: r.symbol, name: r.name, weight: r.marketCap / total }))
 }
 
 const INDEX_ENDPOINT: Record<string, string> = {
@@ -2355,7 +2403,15 @@ import type { Db } from '../store/db'
 import { insertFund, listFunds } from '../store/queries'
 import { fetchPosition, resolveHoldingsFrom, type ResolvedHoldings } from '../fund/holdings'
 
-interface AddBody { code: string; marketValue: number; profit?: number; shares?: number; costBasis?: number }
+interface AddBody {
+  code: string
+  marketValue: number
+  profit?: number
+  shares?: number
+  costBasis?: number
+  /** 跟踪的指数键（如 'ndx'）。指数基金必填，否则只能退回前十大，覆盖率骤降到 40~70% */
+  indexKey?: string
+}
 
 /** 依赖注入：默认走真实网络，单测传入桩函数即可离线运行 */
 export interface FundRouteDeps {
@@ -2381,8 +2437,11 @@ export function registerFundRoutes(app: FastifyInstance, db: Db, deps: FundRoute
     const c = costBasis ?? Math.max(0, marketValue - profit)
 
     const fund = insertFund(db, { code, shares: s, costBasis: c })
+    if (indexKey) {
+      db.prepare('update fund set index_key = ? where code = ?').run(indexKey, code)
+    }
     const resolved = await getHoldings(code)
-    return { fund, holdings: resolved.holdings.length, viaEtf: resolved.viaEtf }
+    return { fund, holdings: resolved.holdings.length, viaEtf: resolved.viaEtf, indexKey: indexKey ?? null }
   })
 
   app.delete<{ Params: { id: string } }>('/api/funds/:id', async (req) => {
@@ -2633,6 +2692,8 @@ import type { MarketStatus } from '../types'
 import { buildEstimate, type FundEstimate } from '../engine/pipeline'
 import { derivePhase } from '../engine/phase'
 import { resolveHoldingsFrom, fetchPosition } from '../fund/holdings'
+import { fetchIndexWeights } from '../fund/indexWeight'
+import type { Holding } from '../types'
 import { fetchUsdCny, fetchUsdCnyFallback } from '../sources/fx'
 import { listFunds } from '../store/queries'
 
@@ -2654,12 +2715,25 @@ export function registerEstimateRoutes(app: FastifyInstance, ctx: Ctx): void {
 
     const fx = await fetchUsdCny().catch(() => fetchUsdCnyFallback())
 
-    // 收集全部成分股，一次批量取价
+    // 权重来源优先级：跟踪指数的全量成分（覆盖率≈100%）> 基金披露的前十大（约 40~70%）。
+    //
+    // 这一条是实测逼出来的：用 270042 的前十大（Σweight=0.4276）算，覆盖股当日加权 +2.63%，
+    // 但 navPct 只有 +1.07%，而同一天 QQQ 实际 +3.20%。低覆盖率会把估值系统性压向 0，
+    // 且无法靠拟合 exposure 补救（需要 exposure≈2.34，但语义上只能在 0~1）。
+    // 所以指数基金必须走全量权重；只有主动型（无 index_key）才退回前十大。
     const perFund = await Promise.all(
-      funds.map(async (f) => ({
-        fund: f,
-        resolved: await resolveHoldingsFrom(f.code, fetchPosition).catch(() => ({ holdings: [], viaEtf: null, asOf: '' })),
-      })),
+      funds.map(async (f) => {
+        if (f.index_key) {
+          const holdings = await fetchIndexWeights(f.index_key).catch(() => [] as Holding[])
+          if (holdings.length > 0) {
+            return { fund: f, resolved: { holdings, viaEtf: null, asOf: '' }, source: 'index' as const }
+          }
+        }
+        const resolved = await resolveHoldingsFrom(f.code, fetchPosition).catch(() => ({
+          holdings: [] as Holding[], viaEtf: null, asOf: '',
+        }))
+        return { fund: f, resolved, source: 'top10' as const }
+      }),
     )
     const symbols = [...new Set(perFund.flatMap((p) => p.resolved.holdings.map((h) => h.symbol)))]
     // 必须先解析市场码再取行情：东财对 NYSE 的票若用了 NASDAQ 前缀，
