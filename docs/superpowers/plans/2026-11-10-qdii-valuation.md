@@ -2481,7 +2481,9 @@ export default function App() {
               <div>
                 <div className="name">{f.name}</div>
                 <div className="meta">
-                  {f.code} · 市值 {fmt(f.marketValue)} · 覆盖 {(f.coveredWeight * 100).toFixed(0)}%
+                  {f.code} · 市值 {fmt(f.marketValue)}
+                  {' · '}持有 <span className={cls(f.holdingProfit)}>{(f.holdingProfit >= 0 ? '+' : '') + fmt(f.holdingProfit)}</span>
+                  {' · '}覆盖 {(f.coveredWeight * 100).toFixed(0)}%
                   {f.missing.length > 0 && ` · 缺 ${f.missing.length} 只行情`}
                 </div>
               </div>
