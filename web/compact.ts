@@ -1,10 +1,10 @@
 /**
  * 小部件（`?compact=1`）的纯逻辑。
  *
- * 320×220 的桌面窗口里只放得下六个字段，所以「显示什么、缺数据时显示什么」
- * 必须先由纯函数定死，再交给 React 画。理由很实际：降级分支一旦散落在 JSX 的
- * 三元里，就没人能一眼看出「行情不可用」到底走到了哪一支——而这里最怕的正是
- * 把汇率腿算出来的 navPct 当成涨跌，糊一个看起来很正常、其实是假的数字。
+ * 340×480 的桌面窗口里：上半是六个汇总字段，下半是全部基金的滚动手风琴列表。
+ * 「显示什么、缺数据时显示什么」必须先由纯函数定死，再交给 React 画。理由很实际：
+ * 降级分支一旦散落在 JSX 的三元里，就没人能一眼看出「行情不可用」到底走到了哪一支——
+ * 而这里最怕的正是把汇率腿算出来的 navPct 当成涨跌，糊一个看起来很正常、其实是假的数字。
  *
  * 这个文件不 import React、不 import CSS：node 里能直接单测。
  */
@@ -46,13 +46,69 @@ export function tailPoints<T>(points: readonly T[], limit = COMPACT_POINT_LIMIT)
 
 export type Tone = 'up' | 'down' | 'flat'
 
-/** 卡片只读 FundEstimate 的这四个字段，测试就不必造一整个回包 */
+/** 卡片只读 FundEstimate 的这几个字段，测试就不必造一整个回包 */
 export interface CompactFund {
+  code: string
+  name: string
   marketValue: number
   amount: number
   holdingProfit: number
+  /** 该只基金当日估算的净值涨跌幅（百分数）；覆盖率 0 时它只是汇率腿，不能当涨跌 */
+  navPct: number
   /** 0 = 这一只没有可用行情（引擎仍会给一个由汇率腿算出的 navPct，那个不能当涨跌） */
   coveredWeight: number
+}
+
+/**
+ * 列表里的一行。
+ *
+ * 全部字段都是「已经决定好怎么显示」的字符串：卡片 JSX 里不该再有
+ * `coveredWeight > 0 ? pctText(...) : DASH` 这种三元——降级规则要能被单测钉住。
+ */
+export interface CompactFundRow {
+  code: string
+  /** 基金名称，拿不到名称时退回代码（宁可显示 162411，也不要一行空白） */
+  name: string
+  /** 排序用的原值，渲染不用 */
+  marketValue: number
+  /** '+2.92%'；覆盖率为 0 时是 '—' */
+  pctText: string
+  pctTone: Tone
+  /** '+1,568.20'；覆盖率为 0 时同样是 '—' */
+  amountText: string
+  amountTone: Tone
+  /** false = 这一只没有可用行情，行内两个数字都是 '—' */
+  covered: boolean
+}
+
+const BY_CODE = (a: CompactFund, b: CompactFund) => a.code.localeCompare(b.code)
+
+/**
+ * 把基金列表压成「按市值从大到小、每只一行」的展示行。
+ *
+ * 两条规则：
+ *   · 排序用市值降序，同值时按代码排（稳定、可测；不依赖 sort 的稳定性）；
+ *   · coveredWeight === 0 的那只，百分比与金额都写 '—'。只把百分比写 '—' 而金额
+ *     照给是个陷阱：此时 navPct 只剩汇率腿，amount = 市值 × 那个数，两个数字同源，
+ *     一个认账一个不认账只会让人以为金额是可信的。整行的两个数字一起弃用。
+ *     它的市值仍计入总资产——持仓是真的，估值不是。
+ */
+export function deriveFundRows(funds: readonly CompactFund[]): CompactFundRow[] {
+  return [...funds]
+    .sort((a, b) => b.marketValue - a.marketValue || BY_CODE(a, b))
+    .map((f) => {
+      const covered = f.coveredWeight > 0
+      return {
+        code: f.code,
+        name: f.name.trim() === '' ? f.code : f.name.trim(),
+        marketValue: f.marketValue,
+        pctText: covered ? pctText(f.navPct) : DASH,
+        pctTone: covered ? tone(f.navPct) : 'flat',
+        amountText: covered ? signedMoney(f.amount) : DASH,
+        amountTone: covered ? tone(f.amount) : 'flat',
+        covered,
+      }
+    })
 }
 
 export interface CompactInput {
@@ -86,6 +142,11 @@ export interface CompactView {
   blindCount: number
   /** 是否至少有一只基金有可用行情（false 时今日估算整块是「行情不可用」） */
   quotesAvailable: boolean
+  /**
+   * 列表区：全部基金，市值降序。空数组时列表区不渲染行，改为显示 note
+   * （「还没有基金」/「正在读取…」/「连不上后端」），所以空态文案只有一处来源。
+   */
+  rows: CompactFundRow[]
 }
 
 export const PHASE_LIVE_TEXT = '盘中 · 5秒刷新'
@@ -132,6 +193,7 @@ export function deriveCompactView(input: CompactInput): CompactView {
     note: null,
     blindCount: 0,
     quotesAvailable: false,
+    rows: [],
   }
 
   if (funds.length === 0) {
@@ -164,5 +226,6 @@ export function deriveCompactView(input: CompactInput): CompactView {
     note: error !== null ? '连不上后端' : null,
     blindCount,
     quotesAvailable,
+    rows: deriveFundRows(funds),
   }
 }

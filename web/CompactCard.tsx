@@ -10,8 +10,8 @@ import {
 import './compact.css'
 
 /**
- * 桌面小部件（`?compact=1`）。会被塞进一个 320×220 的无边框置顶窗口里，
- * 所以这一层只干三件事：按 5 秒取数、把数据压成六个字段、把它们画满一屏。
+ * 桌面小部件（`?compact=1`）。会被塞进一个 340×480 的无边框置顶窗口里，
+ * 所以这一层只干三件事：按 5 秒取数、把数据压成汇总 + 列表行、把它们画满一屏。
  *
  * 刻意不复用 App：主页面的 state（排序、tab、展开行、录入表单）在这里都是
  * 噪声，任何一个都不该有机会让这张卡重渲染。取数口径仍是同一套接口，
@@ -114,7 +114,8 @@ export default function CompactCard() {
           <span className="cc-k">持有收益</span>
           <span className="cc-v num">{view.holdText}</span>
         </div>
-        {view.note !== null && <div className="cc-note">{view.note}</div>}
+        {/* 空仓时的 note 由列表区的空态负责，这里只管「有旧数据但这轮失败了」 */}
+        {view.note !== null && view.rows.length > 0 && <div className="cc-note">{view.note}</div>}
       </div>
 
       {/* 颜色跟着今日估算走：涨红跌绿，无行情时是灰的——没有涨跌就别给颜色 */}
@@ -153,6 +154,25 @@ export default function CompactCard() {
           </>
         )}
       </div>
+
+      {/* 列表区：上半 (汇总 + 曲线) 与底部脚注高度固定，剩下的全给它；
+          基金多了就在这一层滚动，页面本身绝不允许出现滚动条 */}
+      {view.rows.length === 0 ? (
+        // 空态文案只出现一次，并且就放在它描述的那块区域里
+        <div className="cc-list-empty">{view.note ?? DASH}</div>
+      ) : (
+        <ul className="cc-list" aria-label="全部基金">
+          {view.rows.map((row) => (
+            <li className="cc-row" key={row.code}>
+              <span className="cc-name" title={row.name}>
+                {row.name}
+              </span>
+              <span className={`cc-pct num ${row.pctTone}`}>{row.pctText}</span>
+              <span className={`cc-amt num ${row.amountTone}`}>{row.amountText}</span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <div className="cc-foot">
         <span className="cc-phase">

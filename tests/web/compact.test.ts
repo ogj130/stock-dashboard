@@ -6,6 +6,7 @@ import {
   PHASE_SETTLED_TEXT,
   compactClock,
   deriveCompactView,
+  deriveFundRows,
   isCompactQuery,
   tailPoints,
   type CompactFund,
@@ -13,15 +14,18 @@ import {
 } from '../../web/compact'
 
 /**
- * 小部件只有六个字段，任何一格显示错都会在桌面上挂一整天。
+ * 小部件只有六个汇总字段 + 一列基金行，任何一格显示错都会在桌面上挂一整天。
  * 所以这里钉的不是「渲染得像」，而是「缺数据时说了什么」：
  * 无数据 / 零覆盖 / 没有基金，三种降级各写一条。
  */
 
 const fund = (over: Partial<CompactFund> = {}): CompactFund => ({
+  code: '161125',
+  name: '易方达标普信息科技',
   marketValue: 10_000,
   amount: 120,
   holdingProfit: 2_000,
+  navPct: 1.2,
   coveredWeight: 0.99,
   ...over,
 })
@@ -106,6 +110,8 @@ describe('deriveCompactView · 没有基金', () => {
     expect(view.holdText).toBe(DASH)
     expect(view.deltaPctText).toBeNull()
     expect(view.quotesAvailable).toBe(false)
+    // 列表区没有行可画，卡片据此渲染 note 当空态（两者的文案是同一个来源）
+    expect(view.rows).toEqual([])
   })
 
   it('首轮还没回来 → 正在读取…', () => {
@@ -212,5 +218,114 @@ describe('deriveCompactView · 正常读数', () => {
     const view = deriveCompactView(input({ error: 'HTTP 500' }))
     expect(view.note).toBe('连不上后端')
     expect(view.totalText).toBe('10,000.00')
+  })
+})
+
+describe('deriveFundRows · 全部基金按市值从大到小', () => {
+  it('降序排；同市值按代码排（不依赖 sort 稳定性）', () => {
+    const rows = deriveFundRows([
+      fund({ code: '000001', marketValue: 5_000 }),
+      fund({ code: '162411', marketValue: 30_000 }),
+      fund({ code: '270042', marketValue: 5_000 }),
+      fund({ code: '161125', marketValue: 18_000 }),
+    ])
+    expect(rows.map((r) => r.code)).toEqual(['162411', '161125', '000001', '270042'])
+  })
+
+  it('不修改入参（列表是从 state 派生的，改到原数组会污染轮询数据）', () => {
+    const funds = [fund({ code: 'a', marketValue: 1 }), fund({ code: 'b', marketValue: 2 })]
+    const before = funds.map((f) => f.code)
+    deriveFundRows(funds)
+    expect(funds.map((f) => f.code)).toEqual(before)
+  })
+
+  it('空列表 → 没有行', () => {
+    expect(deriveFundRows([])).toEqual([])
+  })
+})
+
+describe('deriveFundRows · 行内的降级与着色', () => {
+  it('有覆盖：navPct 与 amount 各自来自 format.ts，各自着色', () => {
+    const [up] = deriveFundRows([
+      fund({ marketValue: 53_700, navPct: 2.92, amount: 1_568.2, coveredWeight: 0.62 }),
+    ])
+    expect(up).toMatchObject({
+      name: '易方达标普信息科技',
+      pctText: '+2.92%',
+      pctTone: 'up',
+      amountText: '+1,568.20',
+      amountTone: 'up',
+      covered: true,
+    })
+  })
+
+  it('前十大权重（weightsFrom=top10 → coveredWeight 常在 0.4~0.7）照常显示，不额外标注', () => {
+    const [row] = deriveFundRows([fund({ coveredWeight: 0.4276, navPct: 1.07, amount: 268.5 })])
+    expect(row?.pctText).toBe('+1.07%')
+    expect(row?.pctTone).toBe('up')
+    expect(row?.covered).toBe(true)
+  })
+
+  it('零覆盖：百分比与金额都是 —，颜色是中性灰（汇率腿算出的数一个都不许露）', () => {
+    const [row] = deriveFundRows([
+      fund({ code: '968061', name: '某只无行情基金', coveredWeight: 0, navPct: 0.31, amount: 88.8 }),
+    ])
+    expect(row?.pctText).toBe(DASH)
+    expect(row?.amountText).toBe(DASH)
+    expect(row?.pctTone).toBe('flat')
+    expect(row?.amountTone).toBe('flat')
+    expect(row?.covered).toBe(false)
+    // 市值照留：持仓是真的，只是这一天估不准
+    expect(row?.marketValue).toBe(10_000)
+  })
+
+  it('跌：负数带 - 号且是 down', () => {
+    const [row] = deriveFundRows([fund({ navPct: -1.4, amount: -212.5 })])
+    expect(row?.pctText).toBe('-1.40%')
+    expect(row?.pctTone).toBe('down')
+    expect(row?.amountText).toBe('-212.50')
+    expect(row?.amountTone).toBe('down')
+  })
+
+  it('持平：金额不带符号，颜色 flat', () => {
+    const [row] = deriveFundRows([fund({ navPct: 0, amount: 0 })])
+    expect(row?.pctText).toBe('0.00%')
+    expect(row?.pctTone).toBe('flat')
+    expect(row?.amountText).toBe('0.00')
+    expect(row?.amountTone).toBe('flat')
+  })
+
+  it('名称缺失（空串 / 空白）→ 退回基金代码，不留一行空白', () => {
+    const [row] = deriveFundRows([fund({ code: '162411', name: '   ' })])
+    expect(row?.name).toBe('162411')
+  })
+
+  it('名称两端空白被清掉（列表按 px 算宽度，前导空格白占位）', () => {
+    const [row] = deriveFundRows([fund({ name: '  广发纳指100A  ' })])
+    expect(row?.name).toBe('广发纳指100A')
+  })
+})
+
+describe('deriveCompactView · 列表随汇总一起派生', () => {
+  it('16 只全部进 rows，顺序是市值降序，零覆盖那只在中间也如实标 —', () => {
+    const funds = Array.from({ length: 16 }, (_, i) =>
+      fund({
+        code: `fund-${String(i).padStart(2, '0')}`,
+        name: `基金 ${i}`,
+        marketValue: (16 - i) * 1_000,
+        // 第 6 只（从 0 数）没有可用行情
+        coveredWeight: i === 5 ? 0 : 0.6,
+        navPct: i % 2 === 0 ? 1.5 : -0.8,
+        amount: i % 2 === 0 ? 15 : -8,
+      }),
+    )
+    const view = deriveCompactView(input({ funds }))
+    expect(view.rows).toHaveLength(16)
+    expect(view.rows[0]?.marketValue).toBe(16_000)
+    expect(view.rows[15]?.marketValue).toBe(1_000)
+    expect(view.rows[5]?.pctText).toBe(DASH)
+    expect(view.blindCount).toBe(1)
+    // 汇总不受列表影响：总资产仍是全部 16 只
+    expect(view.totalText).toBe('136,000.00')
   })
 })
