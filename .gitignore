@@ -3,3 +3,6 @@ data/*.db
 data/*.db-*
 dist
 .DS_Store
+
+# macOS 卡片的编译产物（源码在 tools/mac-card/）
+tools/mac-card/dist/
