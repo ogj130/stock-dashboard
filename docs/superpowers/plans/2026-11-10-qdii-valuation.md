@@ -2174,6 +2174,7 @@ git add -A && git commit -m "feat(engine): 净值口径标定与仓位系数拟�
  * 这是「净值到底对应哪一天的行情」的数据证据，不靠猜。
  */
 import { fetchPosition, resolveHoldingsFrom } from '../src/fund/holdings'
+import { fetchIndexWeights } from '../src/fund/indexWeight'
 import { estimateNav } from '../src/engine/estimate'
 import { fitExposure } from '../src/engine/calibrate'
 
@@ -2215,13 +2216,24 @@ async function fetchDailyPcts(symbol: string, days = 120): Promise<Map<string, n
 
 interface Row { date: string; actual: number; model: number }
 
-async function backtestOne(code: string): Promise<void> {
+async function backtestOne(spec: string): Promise<void> {
+  // 支持 `270042:ndx` 形式指定跟踪指数。指数型必须给，否则退回前十大，
+  // 覆盖率掉到 40~70%，回测出来的 MAE 会虚高，而那个数字是本项目的验收证据。
+  const [code, indexKey] = spec.split(':')
+  if (!code) return
+
   const nav = await fetchNavHistory(code)
-  const resolved = await resolveHoldingsFrom(code, fetchPosition)
-  if (resolved.holdings.length === 0) {
+  let holdings = indexKey ? await fetchIndexWeights(indexKey).catch(() => []) : []
+  if (holdings.length === 0) {
+    const resolved = await resolveHoldingsFrom(code, fetchPosition)
+    holdings = resolved.holdings
+    if (holdings.length > 0) console.log(`${code}: 无指数权重，退回前十大（覆盖率会偏低）`)
+  }
+  if (holdings.length === 0) {
     console.log(`${code}: 无持仓数据，跳过`)
     return
   }
+  const resolved = { holdings }
 
   const hist = await Promise.all(resolved.holdings.map((h) => fetchDailyPcts(h.symbol)))
   const rows: Row[] = []
@@ -2286,7 +2298,7 @@ main()
 
 - [ ] **Step 2: 跑通并观察真实数字**
 
-Run: `npx tsx scripts/backtest.ts 270042 012868`
+Run: `npx tsx scripts/backtest.ts 270042:ndx 012868`
 Expected: 两行输出。270042（指数型）lag0 或 lag1 的 MAE 应在 0.05~0.2pp 量级（验收线 < 0.15pp）；012868（主动型，只有前十大）明显更差。**若 MAE 大于 1pp，说明权重单位或放大倍数错了，先查 `JZBL` 是否已按 /100 转成小数。**
 
 - [ ] **Step 3: 记录判定结果**
