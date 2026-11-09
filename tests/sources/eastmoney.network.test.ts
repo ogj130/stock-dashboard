@@ -3,7 +3,9 @@ import { EastmoneySource, probeMarket } from '../../src/sources/eastmoney'
 
 describe.skipIf(!process.env.NET)('eastmoney 真实接口', () => {
   it('一次拉 100 只 NDX 成分不报错', async () => {
-    const src = new EastmoneySource()
+    // marketOf 现在必须传入：NVDA/AAPL 这类 NDX 成分在纳斯达克，IBM 在纽交所。
+    const markets: Record<string, number> = { AAPL: 105, MSFT: 105, NVDA: 105, AMZN: 105, META: 105, GOOGL: 105, GOOG: 105, AVGO: 105, TSLA: 105, COST: 105 }
+    const src = new EastmoneySource((s) => markets[s])
     const syms = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'GOOG', 'AVGO', 'TSLA', 'COST']
     const q = await src.fetchQuotes(syms)
     expect(q.length).toBeGreaterThanOrEqual(9)

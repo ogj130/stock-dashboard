@@ -101,11 +101,72 @@ describe('db schema', () => {
     expect(rows[0].model_pct).toBeCloseTo(1.3, 6)
   })
 
-  it('v2 之后 SCHEMA_VERSION 为 2，且重复 migrate 不重复执行 v2', () => {
+  it('v2 之后 SCHEMA_VERSION 为 3，且重复 migrate 不重复执行 v2/v3', () => {
     const db = openDb(':memory:')
-    expect(SCHEMA_VERSION).toBe(2)
+    expect(SCHEMA_VERSION).toBe(3)
     expect(() => migrate(db)).not.toThrow()
     const idx = db.prepare("select name from sqlite_master where type='index' and name='idx_estimate_day'").all()
     expect(idx).toHaveLength(1)
+  })
+})
+
+describe('db schema v3 · covered_weight 浮点漂移（S5）', () => {
+  type Db = ReturnType<typeof openDb>
+  function insertLog(db: Db, coveredWeight: number, date = '2026-11-06'): void {
+    db.prepare(
+      `insert into estimate_log
+         (fund_code, model_ts, target_nav_date, phase, model_pct, model_amount, covered_weight, lag_days, exposure)
+       values ('X', ?, ?, 'live', 1, 0, ?, 1, 0.95)`,
+    ).run(Date.now(), date, coveredWeight)
+  }
+
+  it('归一化权重求和漂移超过 1 时不再 abort 事务', () => {
+    const db = openDb(':memory:')
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
+
+    // 100 个归一化权重逐个累加，实测 sum = 1.0000000000000007（> 1）
+    let sum = 0
+    for (let i = 0; i < 100; i++) sum += 1 / 100
+    expect(sum).toBeGreaterThan(1)
+
+    expect(() => {
+      db.exec('begin')
+      insertLog(db, sum)
+      db.exec('commit')
+    }).not.toThrow()
+  })
+
+  it('上界仍然挡住真正的越界值，不是把 CHECK 删掉', () => {
+    const db = openDb(':memory:')
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
+    expect(() => insertLog(db, 1.5)).toThrow(/CHECK/i)
+    expect(() => insertLog(db, 1.000002)).toThrow(/CHECK/i)
+    expect(() => insertLog(db, -0.1)).toThrow(/CHECK/i)
+  })
+
+  it('重建表搬走已有数据，且唯一约束、索引、外键级联都还在', () => {
+    const db = openDb(':memory:')
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('X', 1)
+    insertLog(db, 0.66)
+
+    // 回退版本号再迁一次，强制重跑 v3 的表重建（copy → drop → rename）
+    db.exec('pragma user_version = 2')
+    migrate(db)
+
+    const rows = db.prepare('select fund_code, covered_weight from estimate_log').all() as any[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].fund_code).toBe('X')
+    expect(rows[0].covered_weight).toBeCloseTo(0.66, 6)
+
+    const idx = db.prepare("select name from sqlite_master where type='index' and name like 'idx_estimate%'")
+    expect((idx.all() as any[]).map((r) => r.name).sort()).toEqual([
+      'idx_estimate_day', 'idx_estimate_lookup', 'idx_estimate_ts',
+    ])
+
+    insertLog(db, 0.7, '2026-11-05')
+    expect(() => insertLog(db, 0.8, '2026-11-05')).toThrow(/UNIQUE/i)
+
+    db.prepare("delete from fund where code = 'X'").run()
+    expect((db.prepare('select count(*) c from estimate_log').get() as any).c).toBe(0)
   })
 })

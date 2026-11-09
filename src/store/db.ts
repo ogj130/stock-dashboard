@@ -124,6 +124,33 @@ const MIGRATIONS: Array<(db: Db) => void> = [
         on estimate_log(fund_code, target_nav_date, phase);
     `)
   },
+  // v3：covered_weight 的精确上界会让浮点漂移误伤。
+  // 100 个归一化权重求和，实测 38% 的概率 > 1.0（2000 次模拟 764 次，本例 sum=1.0000000000000007），
+  // 而 CHECK 失败会 abort 整个 logEstimates 事务，路由直接 500。
+  // SQLite 不能改 CHECK，只能重建表：建新表 → 搬数据 → 换名 → 重建索引。
+  (db) => {
+    db.exec(`
+      create table estimate_log_new (
+        id integer primary key autoincrement,
+        fund_code text not null references fund(code) on delete cascade,
+        model_ts integer not null,
+        target_nav_date text not null,
+        phase text not null check (phase in ('live', 'settled')),
+        model_pct real not null,
+        model_amount real not null default 0,
+        covered_weight real not null check (covered_weight >= 0 and covered_weight <= 1.000001),
+        lag_days integer not null,
+        exposure real not null
+      );
+      insert into estimate_log_new select id, fund_code, model_ts, target_nav_date, phase,
+        model_pct, model_amount, covered_weight, lag_days, exposure from estimate_log;
+      drop table estimate_log;
+      alter table estimate_log_new rename to estimate_log;
+      create index idx_estimate_lookup on estimate_log(fund_code, target_nav_date, phase);
+      create unique index idx_estimate_day on estimate_log(fund_code, target_nav_date, phase);
+      create index idx_estimate_ts on estimate_log(model_ts);
+    `)
+  },
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

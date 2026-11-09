@@ -53,4 +53,37 @@ describe('holdings', () => {
     })
     expect(p.holdings).toHaveLength(0)
   })
+
+  // NEWTEXCH 就是东财 secid 的市场码（实测 2026-11-10：105 NASDAQ / 106 NYSE / 116 港股）。
+  // 保住它，市场码映射就自己填满了，既不用探测也不用默认值。
+  it('NEWTEXCH 解析成 Holding.market', () => {
+    const p = parsePosition({
+      Datas: {
+        fundStocks: [
+          { GPDM: 'TSM', GPJC: '台积电', JZBL: '8.9', NEWTEXCH: '106' },
+          { GPDM: 'NVDA', GPJC: '英伟达', JZBL: '9.76', NEWTEXCH: '105' },
+          { GPDM: '00992', GPJC: '联想集团', JZBL: '8.17', NEWTEXCH: '116' },
+        ],
+        fundboods: [],
+        fundfofs: [],
+      },
+    })
+    expect(p.holdings.map((h) => h.market)).toEqual([106, 105, 116])
+  })
+
+  it('NEWTEXCH 缺失或非法时留 undefined，绝不猜默认市场', () => {
+    const p = parsePosition({
+      Datas: {
+        fundStocks: [
+          { GPDM: 'A', GPJC: 'A', JZBL: '1' },
+          { GPDM: 'B', GPJC: 'B', JZBL: '1', NEWTEXCH: '--' },
+          { GPDM: 'C', GPJC: 'C', JZBL: '1', NEWTEXCH: '0' },
+          { GPDM: 'D', GPJC: 'D', JZBL: '1', NEWTEXCH: '' },
+        ],
+        fundboods: [],
+        fundfofs: [],
+      },
+    })
+    expect(p.holdings.map((h) => h.market)).toEqual([undefined, undefined, undefined, undefined])
+  })
 })

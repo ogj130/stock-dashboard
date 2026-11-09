@@ -1,5 +1,5 @@
 import type { MarketSnapshot, MarketStatus, Quote } from '../types'
-import type { Capability, QuoteSource } from './types'
+import { isUsTicker, type Capability, type QuoteSource } from './types'
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
@@ -73,6 +73,11 @@ export class CnbcSource implements QuoteSource {
   /** CNBC 只认管道符；用逗号不报错，只静默返回第一条 */
   sep = '|'
   capabilities: Capability[] = ['quote', 'marketStatus', 'prepost']
+
+  /** 只服务美股代码：港股（00992）这类纯数字代码它取不到，别让 registry 误记为失败 */
+  resolves(symbol: string): boolean {
+    return isUsTicker(symbol)
+  }
 
   private url(symbols: string[]): string {
     const s = encodeURIComponent(symbols.join(this.sep))

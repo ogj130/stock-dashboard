@@ -1,5 +1,5 @@
 import type { Quote } from '../types'
-import type { Capability, QuoteSource } from './types'
+import { isUsTicker, type Capability, type QuoteSource } from './types'
 
 const BASE = 'https://qt.gtimg.cn/q='
 const UA =
@@ -53,6 +53,11 @@ export class TencentSource implements QuoteSource {
   maxBatch = 100
   sep = ','
   capabilities: Capability[] = ['quote']
+
+  /** 只服务美股代码：港股（00992）这类纯数字代码它取不到，别让 registry 误记为失败 */
+  resolves(symbol: string): boolean {
+    return isUsTicker(symbol)
+  }
 
   async fetchQuotes(symbols: string[]): Promise<Quote[]> {
     if (symbols.length === 0) return []

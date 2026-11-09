@@ -1,5 +1,5 @@
 import type { Quote } from '../types'
-import type { Capability, QuoteSource } from './types'
+import { isUsTicker, type Capability, type QuoteSource } from './types'
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
@@ -68,6 +68,11 @@ export class SinaSource implements QuoteSource {
   maxBatch = 100
   sep = ','
   capabilities: Capability[] = ['quote']
+
+  /** 只服务美股代码：港股（00992）这类纯数字代码它取不到，别让 registry 误记为失败 */
+  resolves(symbol: string): boolean {
+    return isUsTicker(symbol)
+  }
 
   async fetchQuotes(symbols: string[]): Promise<Quote[]> {
     if (symbols.length === 0) return []

@@ -22,6 +22,8 @@ export interface Holding {
   symbol: string
   name: string
   weight: number       // 0~1 的小数
+  /** 东财 secid 市场码（105 NASDAQ / 106 NYSE / 107 AMEX / 116 港股…）。能拿到就必须带 */
+  market?: number
 }
 
 export interface EstimateInput {
