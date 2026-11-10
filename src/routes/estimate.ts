@@ -206,16 +206,25 @@ async function defaultLoadHoldings(
   // 成分权重与披露持仓都是日级别的数据（纳指每季度才调仓），
   // 5 秒轮询没必要每轮重拉一次 21KB 的 101 行报文
   const cached = holdingsMemo.get(fund.code)
-  if (cached && Date.now() - cached.atMs < CONFIG.staleMs.settled) return cached.value
+  if (cached && Date.now() - cached.atMs < cached.ttlMs) return cached.value
 
   const value = await loadHoldingsUncached(fund)
-  holdingsMemo.set(fund.code, { value, atMs: Date.now() })
+  // 空结果只缓存 30 秒。原先是统一缓存 10 分钟，后果是：某一次网络抖动让
+  // fetchIndexWeights 失败 → catch 成 [] → 空数组照样缓存十分钟 →
+  // 这十分钟里每一轮轮询都显示「未取到持仓」，用户看到整屏不可用。
+  // 失败要能被下一次请求快速重试，成功才值得缓存久一点。
+  const ttlMs = value.holdings.length > 0 ? CONFIG.staleMs.settled : 30_000
+  holdingsMemo.set(fund.code, { value, atMs: Date.now(), ttlMs })
   return value
 }
 
 const holdingsMemo = new Map<
   string,
-  { value: { holdings: Holding[]; weightsFrom: FundEstimate['weightsFrom'] }; atMs: number }
+  {
+    value: { holdings: Holding[]; weightsFrom: FundEstimate['weightsFrom'] }
+    atMs: number
+    ttlMs: number
+  }
 >()
 
 async function loadHoldingsUncached(
