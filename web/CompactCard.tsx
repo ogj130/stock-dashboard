@@ -187,6 +187,21 @@ export default function CompactCard() {
         {/* 有夜盘才多这一段；没有就什么都不渲染（绝不写「夜盘 —」） */}
         {view.afterHoursText !== null && <span className="cc-ah">· {view.afterHoursText}</span>}
         <span className="cc-clock num">{view.clockText}</span>
+        {/* 卡片只放总览，明细在网页端。点这里交给 Swift 外壳用系统浏览器打开 */}
+        <button
+          type="button"
+          className="cc-open"
+          title="在浏览器打开完整页面"
+          onClick={() => {
+            const bridge = (window as unknown as {
+              webkit?: { messageHandlers?: { card?: { postMessage(m: string): void } } }
+            }).webkit?.messageHandlers?.card
+            if (bridge) bridge.postMessage('open')
+            else window.open('/', '_blank', 'noopener')
+          }}
+        >
+          完整页面
+        </button>
       </div>
     </div>
   )

@@ -268,6 +268,22 @@ html.cc-mode body {
 
 /* ---------- 脚注：相位 + 覆盖 + 时刻 ---------- */
 
+.cc-open {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 9px;
+  line-height: 1.4;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+.cc-open:hover { background: rgba(255, 255, 255, 0.12); }
+.cc-open:active { background: rgba(255, 255, 255, 0.18); }
+
 .cc-foot {
   flex: 0 0 auto;
   display: flex;
@@ -316,7 +332,7 @@ html.cc-mode body {
 }
 
 .cc-clock {
-  margin-left: auto;
+  margin-left: 4px;
   flex: 0 0 auto;
   font-size: 10px;
   color: var(--muted);

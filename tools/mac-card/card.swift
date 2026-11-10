@@ -13,7 +13,7 @@ import WebKit
 private let kAppURL = "http://127.0.0.1:5178/?compact=1"
 private let kFullURL = "http://127.0.0.1:5178/"
 private let kApiURL = "http://127.0.0.1:5178/api/estimate"
-private let kCardSize = NSSize(width: 340, height: 440)   // 上方总览 + 中间曲线 + 下方可滚动的基金列表
+private let kCardSize = NSSize(width: 340, height: 420)   // 上方总览 + 中间曲线 + 下方可滚动的基金列表
 private let kOriginXKey = "cardOriginX"
 private let kOriginYKey = "cardOriginY"
 private let kMovedKey = "cardMoved"
@@ -36,7 +36,7 @@ final class CardWindow: NSWindow {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var statusItem: NSStatusItem!
@@ -171,6 +171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     // MARK: - 卡片窗口
 
     private func buildWindow() {
+        // 调试期间可能留下过 cardMoved 记忆，导致「默认位置」失效。
+        // 只有用户真的拖动过才恢复记忆位置；否则一律贴菜单栏下方。
         let origin = savedOrigin() ?? originBelowStatusItem()
 
         window = CardWindow(
@@ -188,6 +190,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         window.isReleasedWhenClosed = false
 
         let config = WKWebViewConfiguration()
+        // 页面里的「完整页面」按钮通过这个通道喊外壳，外壳再用系统浏览器打开。
+        // 直接 target=_blank 在 WKWebView 里没有反应，所以必须走消息桥。
+        config.userContentController.add(self, name: "card")
         webView = WKWebView(frame: NSRect(origin: .zero, size: kCardSize), configuration: config)
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
@@ -318,6 +323,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         if showingError { return }
         showingError = true
         showOfflineCard()
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "card", let body = message.body as? String else { return }
+        if body == "open" { openFullPage() }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
