@@ -101,9 +101,9 @@ describe('db schema', () => {
     expect(rows[0].model_pct).toBeCloseTo(1.3, 6)
   })
 
-  it('v5 之后 SCHEMA_VERSION 为 5，且重复 migrate 不重复执行 v2/v3', () => {
+  it('v6 之后 SCHEMA_VERSION 为 6，且重复 migrate 不重复执行 v2/v3', () => {
     const db = openDb(':memory:')
-    expect(SCHEMA_VERSION).toBe(5)
+    expect(SCHEMA_VERSION).toBe(6)
     expect(() => migrate(db)).not.toThrow()
     const idx = db.prepare("select name from sqlite_master where type='index' and name='idx_estimate_day'").all()
     expect(idx).toHaveLength(1)
@@ -111,7 +111,7 @@ describe('db schema', () => {
 })
 
 describe('db schema v4 · portfolio_snapshot', () => {
-  it('表与 ts 索引都在，且 user_version 真的推到 5', () => {
+  it('表与 ts 索引都在，且 user_version 真的推到最新', () => {
     const db = openDb(':memory:')
     const cols = db.prepare('pragma table_info(portfolio_snapshot)').all() as Array<{
       name: string
@@ -130,7 +130,7 @@ describe('db schema v4 · portfolio_snapshot', () => {
     expect(idx.map((r) => r.name)).toEqual(['idx_portfolio_ts'])
 
     const row = db.prepare('pragma user_version').get() as { user_version: number }
-    expect(row.user_version).toBe(5)
+    expect(row.user_version).toBe(SCHEMA_VERSION)
   })
 
   it('快照表可插入并按 ts_ms 取回', () => {
@@ -162,7 +162,7 @@ describe('db schema v4 · portfolio_snapshot', () => {
     migrate(db)
 
     expect((db.prepare("select count(*) c from fund where code='X'").get() as any).c).toBe(1)
-    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(5)
+    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(SCHEMA_VERSION)
     expect(
       db.prepare("select name from sqlite_master where type='table' and name='portfolio_snapshot'").all(),
     ).toHaveLength(1)
@@ -220,7 +220,7 @@ describe('db schema v5 · total_profit（持有收益）', () => {
     expect(rows.map((r) => r.ts_ms)).toEqual([1, 2])
     expect(rows.map((r) => r.total_profit)).toEqual([0, 0])
     expect(rows[0]!.total_value).toBeCloseTo(84_321.5, 6)
-    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(5)
+    expect((db.prepare('pragma user_version').get() as any).user_version).toBe(SCHEMA_VERSION)
   })
 
   it('可写负数（持有浮亏），不会被 check 或 not null 拦下', () => {
@@ -297,5 +297,89 @@ describe('db schema v3 · covered_weight 浮点漂移（S5）', () => {
 
     db.prepare("delete from fund where code = 'X'").run()
     expect((db.prepare('select count(*) c from estimate_log').get() as any).c).toBe(0)
+  })
+})
+
+describe('db schema v6 · 盘前相位', () => {
+  /** 退回 v5 形状：estimate_log 的 phase 只允许 live/settled */
+  function v5Db() {
+    const db = openDb(':memory:')
+    db.exec(`
+      drop table estimate_log;
+      create table estimate_log (
+        id integer primary key autoincrement,
+        fund_code text not null references fund(code) on delete cascade,
+        model_ts integer not null,
+        target_nav_date text not null,
+        phase text not null check (phase in ('live', 'settled')),
+        model_pct real not null,
+        model_amount real not null default 0,
+        covered_weight real not null check (covered_weight >= 0 and covered_weight <= 1.000001),
+        lag_days integer not null,
+        exposure real not null
+      );
+      create index idx_estimate_lookup on estimate_log(fund_code, target_nav_date, phase);
+      create unique index idx_estimate_day on estimate_log(fund_code, target_nav_date, phase);
+      create index idx_estimate_ts on estimate_log(model_ts);
+    `)
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('270042', 1)
+    db.prepare(
+      `insert into estimate_log (fund_code, model_ts, target_nav_date, phase, model_pct, covered_weight, lag_days, exposure)
+       values ('270042', 1, '2026-11-09', 'live', 3.2, 1.0, 1, 0.95)`,
+    ).run()
+    db.exec('pragma user_version = 5')
+    return db
+  }
+
+  it('老库升级后盘前相位可写，历史 live 行一行不丢', () => {
+    const db = v5Db()
+    migrate(db)
+
+    const kept = db.prepare('select phase, model_pct from estimate_log').all() as Array<{
+      phase: string
+      model_pct: number
+    }>
+    expect(kept).toEqual([{ phase: 'live', model_pct: 3.2 }])
+
+    db.prepare(
+      `insert into estimate_log (fund_code, model_ts, target_nav_date, phase, model_pct, covered_weight, lag_days, exposure)
+       values ('270042', 2, '2026-11-10', 'pre', 1.05, 0.98, 1, 0.95)`,
+    ).run()
+    const pre = db.prepare("select model_pct from estimate_log where phase='pre'").get() as {
+      model_pct: number
+    }
+    expect(pre.model_pct).toBeCloseTo(1.05, 6)
+  })
+
+  it('重建后唯一索引仍在（否则 5 秒轮询会立刻撞唯一键报错）', () => {
+    const db = v5Db()
+    migrate(db)
+    const idx = db
+      .prepare("select name from sqlite_master where type='index' and tbl_name='estimate_log'")
+      .all() as Array<{ name: string }>
+    expect(idx.map((r) => r.name).sort()).toEqual(
+      ['idx_estimate_day', 'idx_estimate_lookup', 'idx_estimate_ts'].sort(),
+    )
+    expect(() =>
+      db
+        .prepare(
+          `insert into estimate_log (fund_code, model_ts, target_nav_date, phase, model_pct, covered_weight, lag_days, exposure)
+           values ('270042', 9, '2026-11-09', 'live', 3.3, 1.0, 1, 0.95)`,
+        )
+        .run(),
+    ).toThrow(/UNIQUE/)
+  })
+
+  it('乱写的相位仍被 CHECK 拦住（别把脏相位放进对账序列）', () => {
+    const db = openDb(':memory:')
+    db.prepare('insert into fund (code, created_at) values (?,?)').run('270042', 1)
+    expect(() =>
+      db
+        .prepare(
+          `insert into estimate_log (fund_code, model_ts, target_nav_date, phase, model_pct, covered_weight, lag_days, exposure)
+           values ('270042', 1, '2026-11-10', 'premarket', 1, 1, 1, 0.95)`,
+        )
+        .run(),
+    ).toThrow(/CHECK/)
   })
 })

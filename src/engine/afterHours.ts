@@ -22,6 +22,8 @@ export interface AfterHoursEstimateInput {
 export interface AfterHoursEstimate {
   /** 盘后口径的净值涨跌幅（百分数） */
   navPct: number
+  /** 股票腿原始加权涨跌幅（未乘 exposure、未叠加汇率） */
+  stockPct: number
   /** 参与计算的权重之和（已夹到 0~1） */
   coveredWeight: number
   /** 参与计算的盘后成交时刻里最新的那个（用于「更新于 19:59 ET」） */
@@ -29,7 +31,12 @@ export interface AfterHoursEstimate {
 }
 
 /**
- * 夜盘估值。纯函数，不做 IO。
+ * 延伸时段估值（盘前与夜盘共用）。纯函数，不做 IO。
+ *
+ * 盘前与夜盘的数学完全一样：两边的涨跌幅都以**上一交易日收盘**为基准，
+ * 都不该用 indexPct（那是常规时段的数），也都不能用 residualPct 外推
+ * （时段成交薄，外推会把噪声放大成"净值"）。差别只在取数来源与文案。
+ * 所以这里一个函数两种用法，靠调用方决定传哪批行情。
  *
  *   r_stock = Σ(wᵢ·ahPctᵢ) / Σwᵢ        只对**有盘后行情**的成分做加权
  *   r_fx    = fxNow/fxPrev − 1           与收盘估值同一条汇率腿
@@ -42,7 +49,7 @@ export interface AfterHoursEstimate {
  * ② 不做 residualPct 外推：覆盖不到的部分就靠 0.3 的门槛挡住，不外推；
  * ③ 分母只用有盘后行情的成分权重（Σw 是子集），因为基准是「这半批资产的盘后表现」。
  */
-export function estimateAfterHours(input: AfterHoursEstimateInput): AfterHoursEstimate | null {
+export function estimateExtendedHours(input: AfterHoursEstimateInput): AfterHoursEstimate | null {
   const { holdings, afterHours, fxNow, fxPrev, exposure } = input
 
   const usable = holdings.filter((h) => afterHours.has(h.symbol))
@@ -65,5 +72,8 @@ export function estimateAfterHours(input: AfterHoursEstimateInput): AfterHoursEs
     return Number.isFinite(ts) && ts > latest ? ts : latest
   }, 0)
 
-  return { navPct, coveredWeight, asOfMs }
+  return { navPct, stockPct: weighted, coveredWeight, asOfMs }
 }
+
+/** 夜盘入口：语义别名，别让调用方以为盘前也走这条取名 */
+export const estimateAfterHours = estimateExtendedHours

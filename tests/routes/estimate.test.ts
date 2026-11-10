@@ -534,3 +534,118 @@ describe('降级原因要能分辨', () => {
     expect(body.funds[0].indexWeightsUnavailable).toBe(false)
   })
 })
+
+describe('盘前相位', () => {
+  const PRE = new Map([
+    ['AAPL', { symbol: 'AAPL', price: 349.8, pct: -0.25, tsMs: 1_700_000_000_000 }],
+  ])
+  const holdings = [{ symbol: 'AAPL', name: '苹果', weight: 0.8, market: 105 }]
+
+  it('PRE_MKT 会去取盘前行情，并给出第二组数字', async () => {
+    const spy = vi.fn(async () => PRE)
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: null }],
+      { loadHoldings: async () => ({ holdings, weightsFrom: 'top10' }), preMarket: spy },
+      ['AAPL'],
+      'PRE_MKT',
+    )
+    const { body } = await get(app)
+    expect(body.phase).toBe('pre')
+    expect(spy).toHaveBeenCalled()
+    // 与收盘估值同一条汇率腿：stub 汇率 7.2/7.18 = +0.279%，
+    // 会把这 -0.25% 的股票腿几乎抵平——这正是必须把两条腿一起验的原因
+    const expected = 0.95 * ((1 - 0.0025) * (7.2 / 7.18) - 1) * 100
+    expect(body.funds[0].preMarket.navPct).toBeCloseTo(expected, 6)
+    expect(body.funds[0].preMarket.coveredWeight).toBeCloseTo(0.8, 6)
+  })
+
+  it('盘前不取夜盘行情（那是十几个小时以后的事）', async () => {
+    const nightSpy = vi.fn(async () => new Map())
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: null }],
+      { loadHoldings: async () => ({ holdings, weightsFrom: 'top10' }), afterHours: nightSpy },
+      ['AAPL'],
+      'PRE_MKT',
+    )
+    const { body } = await get(app)
+    expect(nightSpy).not.toHaveBeenCalled()
+    expect('afterHours' in body.funds[0]).toBe(false)
+  })
+
+  it('盘中不取盘前行情，也不带盘前键', async () => {
+    const spy = vi.fn(async () => PRE)
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: null }],
+      { loadHoldings: async () => ({ holdings, weightsFrom: 'top10' }), preMarket: spy },
+      ['AAPL'],
+      'REG_MKT',
+    )
+    const { body } = await get(app)
+    expect(body.phase).toBe('live')
+    expect(spy).not.toHaveBeenCalled()
+    expect('preMarket' in body.funds[0]).toBe(false)
+  })
+
+  it('盘前取数失败不影响主估值（这条腿是补充读数）', async () => {
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: null }],
+      {
+        loadHoldings: async () => ({ holdings, weightsFrom: 'top10' }),
+        preMarket: async () => {
+          throw new Error('boom')
+        },
+      },
+      ['AAPL'],
+      'PRE_MKT',
+    )
+    const { status, body } = await get(app)
+    expect(status).toBe(200)
+    expect('preMarket' in body.funds[0]).toBe(false)
+    expect(Number.isFinite(body.funds[0].navPct)).toBe(true)
+  })
+})
+
+describe('盘前指数口径', () => {
+  const holdings = [{ symbol: 'AAPL', name: '苹果', weight: 0.8, market: 105 }]
+  // QQQ 是 NDX100 的代理：请求里必须带上它，否则只能退回成分加权
+  const PRE = new Map([
+    ['AAPL', { symbol: 'AAPL', price: 349.8, pct: -0.5, tsMs: 1_700_000_000_000 }],
+    ['QQQ', { symbol: 'QQQ', price: 677.8, pct: -0.2, tsMs: 1_700_000_000_000 }],
+  ])
+
+  it('跟踪纳指的基金用 QQQ 口径，成分加权只留作对账', async () => {
+    const asked: string[][] = []
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      {
+        loadHoldings: async () => ({ holdings, weightsFrom: 'top10' }),
+        preMarket: async (symbols) => {
+          asked.push(symbols)
+          return PRE
+        },
+      },
+      ['AAPL'],
+      'PRE_MKT',
+    )
+    const { body } = await get(app)
+    const pm = body.funds[0].preMarket
+    expect(pm.basis).toBe('index')
+    // -0.2% × exposure 0.95，再叠汇率腿（stub 7.2/7.18）
+    expect(pm.navPct).toBeCloseTo(0.95 * ((1 - 0.002) * (7.2 / 7.18) - 1) * 100, 6)
+    expect(pm.constituentPct).toBeCloseTo(-0.5, 6)
+    // 代理 ETF 必须在请求列表里，而且只出现一次
+    expect(asked[0]).toContain('QQQ')
+    expect(asked[0]!.filter((s) => s === 'QQQ')).toHaveLength(1)
+  })
+
+  it('主动基金（没有 index_key）不会被塞指数口径', async () => {
+    const { app } = makeApp(
+      [{ code: '012920', name: '主动', indexKey: null }],
+      { loadHoldings: async () => ({ holdings, weightsFrom: 'top10' }), preMarket: async () => PRE },
+      ['AAPL'],
+      'PRE_MKT',
+    )
+    const { body } = await get(app)
+    expect(body.funds[0].preMarket.basis).toBe('constituents')
+  })
+})

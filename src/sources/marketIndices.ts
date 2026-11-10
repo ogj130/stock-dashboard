@@ -30,14 +30,48 @@ export interface MarketIndexSpec {
   secid: string
   sinaCode: string
   layout: 'gb' | 's'
+  /**
+   * 盘前代理 ETF。
+   *
+   * 为什么盘前不能继续用「指数全量成分加权」：指数成分权重是**按市值归一化**算出来的，
+   * 而纳斯达克 100 用的是修正市值加权（有封顶规则），两者在大盘股分化时能差 0.3pp 以上。
+   * 实测 2026-11-10 盘前：成分加权 +0.07%，QQQ −0.21%，纳指期货 −0.21% —— 后两者一致，
+   * 说明偏差来自权重口径而不是行情。
+   *
+   * 常规时段我们有官方指数涨跌幅可用；盘前官方指数不交易，于是退一步用跟踪同一指数的
+   * 单只 ETF（价格里已经包含了权重信息，不需要我们再算一遍权重）。
+   */
+  preMarketProxy?: string
 }
 
 export const MARKET_INDEX_SPECS: readonly MarketIndexSpec[] = [
   { symbol: '000001', name: '上证指数', secid: '1.000001', sinaCode: 's_sh000001', layout: 's' },
   { symbol: '399001', name: '深证成指', secid: '0.399001', sinaCode: 's_sz399001', layout: 's' },
-  { symbol: 'NDX100', name: '纳斯达克100', secid: '100.NDX100', sinaCode: 'gb_ndx', layout: 'gb' },
-  { symbol: 'SPX', name: '标普500', secid: '100.SPX', sinaCode: 'gb_$inx', layout: 'gb' },
+  {
+    symbol: 'NDX100',
+    name: '纳斯达克100',
+    secid: '100.NDX100',
+    sinaCode: 'gb_ndx',
+    layout: 'gb',
+    preMarketProxy: 'QQQ',
+  },
+  {
+    symbol: 'SPX',
+    name: '标普500',
+    secid: '100.SPX',
+    sinaCode: 'gb_$inx',
+    layout: 'gb',
+    preMarketProxy: 'SPY',
+  },
 ]
+
+/** 指数 key（基金表里的 index_key）→ 盘前代理 ETF */
+export const PRE_MARKET_PROXY_BY_INDEX: Readonly<Record<string, string>> = Object.fromEntries(
+  MARKET_INDEX_SPECS.filter((s) => s.preMarketProxy).map((s) => [
+    s.symbol === 'NDX100' ? 'ndx' : 'sp500',
+    s.preMarketProxy!,
+  ]),
+)
 
 /** 东财一次 ulist 拿全部四条，顺序与界面一致 */
 export const MARKET_INDEX_SECIDS: readonly string[] = MARKET_INDEX_SPECS.map((s) => s.secid)

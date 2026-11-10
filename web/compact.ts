@@ -116,7 +116,7 @@ export function deriveFundRows(funds: readonly CompactFund[]): CompactFundRow[] 
 
 export interface CompactInput {
   funds: readonly CompactFund[]
-  phase: 'live' | 'settled'
+  phase: 'pre' | 'live' | 'settled'
   /** 最后一轮**成功**取数的时刻；null = 还没成功过 */
   updatedAt: number | null
   /** 首轮请求是否已经回来：用来区分「还在读」和「真的没有基金」 */
@@ -155,6 +155,7 @@ export interface CompactView {
 }
 
 export const PHASE_LIVE_TEXT = '盘中 · 5秒刷新'
+export const PHASE_PRE_TEXT = '盘前 · 5秒刷新'
 export const PHASE_SETTLED_TEXT = '待公布'
 
 export const DASH = '—'
@@ -190,6 +191,12 @@ function nightLine(funds: readonly CompactFund[]): string | null {
  *   · 部分无覆盖 → 只在有覆盖的那几只上求和，百分比的分母也只取它们的市值，
  *     脚注再补一句「N 只无覆盖」。
  */
+const PHASE_TEXT: Record<'pre' | 'live' | 'settled', string> = {
+  pre: PHASE_PRE_TEXT,
+  live: PHASE_LIVE_TEXT,
+  settled: PHASE_SETTLED_TEXT,
+}
+
 export function deriveCompactView(input: CompactInput): CompactView {
   const { funds, phase, updatedAt, loaded, error } = input
 
@@ -199,7 +206,7 @@ export function deriveCompactView(input: CompactInput): CompactView {
     deltaPctText: null,
     deltaTone: 'flat',
     holdText: DASH,
-    phaseText: phase === 'live' ? PHASE_LIVE_TEXT : PHASE_SETTLED_TEXT,
+    phaseText: PHASE_TEXT[phase],
     clockText: compactClock(updatedAt),
     afterHoursText: null,
     note: null,

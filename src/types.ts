@@ -1,5 +1,12 @@
 export type MarketStatus = 'PRE_MKT' | 'REG_MKT' | 'POST_MKT' | 'CLOSED'
-export type Phase = 'live' | 'settled'
+/**
+ * 交易相位。
+ * - `pre`：盘前（04:00–09:30 ET）。盘前价与昨收是两套基准，必须分开一条腿算，
+ *          否则常规接口给的"昨天收盘"会被当成本刻行情显示出来。
+ * - `live`：常规时段。
+ * - `settled`：盘后/闭市，只谈夜盘与待公布净值。
+ */
+export type Phase = 'pre' | 'live' | 'settled'
 export type AssetClass = 'us_equity'
 
 export interface Quote {

@@ -124,3 +124,97 @@ describe('indexWeightsUnavailable', () => {
     expect(buildEstimate(base).indexWeightsUnavailable).toBe(false)
   })
 })
+
+describe('盘前那条腿', () => {
+  // 盘前价与 navPct 都是「相对上一交易日收盘」，只是先后两段：
+  // navPct 是昨天那一整段（常规接口在盘前只会给这个），preMarket 是今天盘前进行中那段。
+  const base = {
+    code: '270042', name: '广发纳指', shares: 1000, costBasis: 5000,
+    nav: 7.37, holdings, quotes, fxNow: 7, fxPrev: 7,
+    exposure: 1, lagDays: 1, weightsFrom: 'index' as const,
+  }
+  const pre = new Map([
+    ['AAPL', { symbol: 'AAPL', price: 111, pct: 1, tsMs: 1_700_000_000_000 }],
+    ['MSFT', { symbol: 'MSFT', price: 99, pct: -1, tsMs: 1_700_000_001_000 }],
+  ])
+
+  it('盘前相且覆盖率够 → 给出第二组数字', () => {
+    const r = buildEstimate({ ...base, phase: 'pre', preMarket: pre })
+    // 0.6*1 + 0.4*(-1) = +0.2%
+    expect(r.preMarket).toBeDefined()
+    expect(r.preMarket!.navPct).toBeCloseTo(0.2, 6)
+    expect(r.preMarket!.coveredWeight).toBeCloseTo(1, 6)
+    expect(r.preMarket!.amount).toBeCloseTo(1000 * 7.37 * 0.002, 6)
+    expect(r.preMarket!.asOfMs).toBe(1_700_000_001_000)
+  })
+
+  it('盘中/收盘相根本不带这个键（哪怕调用方塞了行情）', () => {
+    for (const phase of ['live', 'settled'] as const) {
+      const r = buildEstimate({ ...base, phase, preMarket: pre })
+      expect('preMarket' in r).toBe(false)
+    }
+  })
+
+  it('覆盖率不足 30% 就不出盘前数字，而不是给个假 0', () => {
+    // 持仓里只有 0.2 的权重有盘前成交 → 低于 0.3 的门槛
+    const thin = new Map([['AAPL', { symbol: 'AAPL', price: 111, pct: 1, tsMs: 1 }]])
+    const lowCover = [
+      { symbol: 'AAPL', name: '苹果', weight: 0.2 },
+      { symbol: 'MSFT', name: '微软', weight: 0.8 },
+    ]
+    const r = buildEstimate({ ...base, holdings: lowCover, phase: 'pre', preMarket: thin })
+    expect('preMarket' in r).toBe(false)
+  })
+
+  it('盘前不掺 indexPct：官方指数涨跌是常规时段的数，拿来算盘前会把白天涨幅重算一遍', () => {
+    const r = buildEstimate({ ...base, phase: 'pre', preMarket: pre, indexPct: 3.4 })
+    // 若误用 indexPct，这里会变成 3.4 而非 0.2
+    expect(r.preMarket!.navPct).toBeCloseTo(0.2, 6)
+  })
+})
+
+describe('盘前口径：指数代理优先', () => {
+  // 实测依据（2026-11-10 04:30 ET）：成分加权 +0.07%，QQQ −0.21%，纳指期货 −0.17%。
+  // 后两者一致 → 偏差来自「成分权重是我们按市值归一化的近似」，不是行情错。
+  // 所以跟踪指数的基金在盘前用 ETF 的口径，与常规时段用官方指数涨跌幅是同一条原则。
+  const base = {
+    code: '270042', name: '广发纳指', shares: 1000, costBasis: 5000,
+    nav: 7.37, holdings, quotes, fxNow: 7, fxPrev: 7,
+    exposure: 1, lagDays: 1, phase: 'pre' as const, weightsFrom: 'index' as const,
+  }
+  const pre = new Map([
+    ['AAPL', { symbol: 'AAPL', price: 110, pct: 10, tsMs: 5 }],
+    ['MSFT', { symbol: 'MSFT', price: 100, pct: 0, tsMs: 6 }],
+  ])
+
+  it('给了指数代理涨跌幅就用它，并把成分口径留着对账', () => {
+    const r = buildEstimate({ ...base, preMarket: pre, preMarketIndexPct: -0.2 })
+    expect(r.preMarket!.basis).toBe('index')
+    expect(r.preMarket!.navPct).toBeCloseTo(-0.2, 6)
+    // 成分加权是 0.6*10 = 6%：两套口径差了 6pp 也要如实留着，别抹平
+    expect(r.preMarket!.constituentPct).toBeCloseTo(6, 6)
+  })
+
+  it('没有指数（主动基金）→ 成分口径', () => {
+    const r = buildEstimate({ ...base, weightsFrom: 'top10', preMarket: pre })
+    expect(r.preMarket!.basis).toBe('constituents')
+    expect(r.preMarket!.navPct).toBeCloseTo(6, 6)
+  })
+
+  it('指数口径也要过汇率腿（与收盘同一条腿，不能漏）', () => {
+    const r = buildEstimate({ ...base, preMarket: pre, preMarketIndexPct: -0.2, fxNow: 7.14, fxPrev: 7 })
+    // (-0.2%) × (7.14/7 − 1 = +2%) → ≈ +1.796%
+    expect(r.preMarket!.navPct).toBeCloseTo(((1 - 0.002) * 1.02 - 1) * 100, 6)
+  })
+
+  it('指数代理拿到但成分一只都没有 → 仍然出盘前数字（口径不依赖成分）', () => {
+    const r = buildEstimate({ ...base, preMarket: new Map(), preMarketIndexPct: -0.2 })
+    expect(r.preMarket!.basis).toBe('index')
+    expect(r.preMarket!.coveredWeight).toBe(1)
+  })
+
+  it('非有限值的代理涨跌被当成「没给」，退回成分口径', () => {
+    const r = buildEstimate({ ...base, weightsFrom: 'top10', preMarket: pre, preMarketIndexPct: NaN })
+    expect(r.preMarket!.basis).toBe('constituents')
+  })
+})

@@ -170,6 +170,33 @@ const MIGRATIONS: Array<(db: Db) => void> = [
   (db) => {
     db.exec(`alter table portfolio_snapshot add column total_profit real not null default 0`)
   },
+  // v6：相位多出「盘前」。
+  // 盘前必须与 live 分开记：那一段的常规行情是**上一交易日收盘**，
+  // 混进 live 会让对账时把「昨天收盘的涨跌」和「今天盘前的涨跌」当成同一条序列。
+  // CHECK 约束不能改，只能照 v3 的办法重建；独有的索引要跟着重建。
+  (db) => {
+    db.exec(`
+      create table estimate_log_new (
+        id integer primary key autoincrement,
+        fund_code text not null references fund(code) on delete cascade,
+        model_ts integer not null,
+        target_nav_date text not null,
+        phase text not null check (phase in ('pre', 'live', 'settled')),
+        model_pct real not null,
+        model_amount real not null default 0,
+        covered_weight real not null check (covered_weight >= 0 and covered_weight <= 1.000001),
+        lag_days integer not null,
+        exposure real not null
+      );
+      insert into estimate_log_new select id, fund_code, model_ts, target_nav_date, phase,
+        model_pct, model_amount, covered_weight, lag_days, exposure from estimate_log;
+      drop table estimate_log;
+      alter table estimate_log_new rename to estimate_log;
+      create index idx_estimate_lookup on estimate_log(fund_code, target_nav_date, phase);
+      create unique index idx_estimate_day on estimate_log(fund_code, target_nav_date, phase);
+      create index idx_estimate_ts on estimate_log(model_ts);
+    `)
+  },
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

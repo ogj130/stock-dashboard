@@ -176,6 +176,12 @@ body {
   display: inline-block;
 }
 
+/* 盘前：不脉冲。它不是「正在跳的行情」，而是「还没开盘的预期」，
+   用脉动动画会让人以为这是实时成交 */
+.dot.pre {
+  background: var(--warn);
+}
+
 .dot.live {
   background: var(--up);
   box-shadow: 0 0 0 3px rgba(255, 77, 79, 0.18);
@@ -614,6 +620,13 @@ body {
   border: 1px solid var(--stroke-soft);
 }
 
+/* 盘前口径标识：蓝色系而非警告色——它不是降级，只是另一段时间 */
+.chip.pre {
+  color: #7cc4ff;
+  background: rgba(80, 170, 255, 0.1);
+  border-color: rgba(80, 170, 255, 0.3);
+}
+
 .chip.warn {
   color: var(--warn);
   background: rgba(245, 181, 68, 0.1);
@@ -858,4 +871,34 @@ body {
   .submit {
     grid-column: span 2;
   }
+}
+
+/* 盘前/昨收 切换：与「盘前 · 5 秒刷新」同一行，尺寸压到跟相位文字一样小，
+   免得一个口径开关看起来比主数字还重要 */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.seg button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 9px;
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  cursor: pointer;
+}
+
+.seg button.on {
+  color: #7cc4ff;
+  background: rgba(80, 170, 255, 0.16);
+}
+
+.seg button:focus-visible {
+  outline: 2px solid rgba(80, 170, 255, 0.6);
+  outline-offset: -2px;
 }

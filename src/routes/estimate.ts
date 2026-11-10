@@ -9,6 +9,8 @@ import { fetchIndexWeights } from '../fund/indexWeight'
 import { fetchUsdCny, fetchUsdCnyFallback, loadCachedFx, saveFx, type FxRate } from '../sources/fx'
 import { createMarketIndicesCache, type MarketIndex } from '../sources/marketIndices'
 import { fetchAfterHours } from '../sources/afterHours'
+import { fetchPreMarket } from '../sources/preMarket'
+import { PRE_MARKET_PROXY_BY_INDEX } from '../sources/marketIndices'
 import { listFunds, upsertNav, type FundRow } from '../store/queries'
 import { recordSnapshot } from '../store/portfolio'
 import { CONFIG } from '../config'
@@ -39,6 +41,8 @@ export interface EstimateDeps {
   latestNav?: (code: string) => Promise<number>
   /** 底部指数条。默认 30 秒缓存 + 东财；测试按需注入，保持完全离线 */
   marketIndices?: () => Promise<MarketIndex[]>
+  /** 盘前行情。默认 CNBC（权威，带 PRE_MKT 类型）→ 新浪兜底；只在 phase === 'pre' 时才被调用 */
+  preMarket?: (symbols: string[]) => Promise<Map<string, AfterHoursQuote>>
   /** 夜盘（盘后）行情。默认新浪单源 + 60 秒缓存；只在 phase === 'settled' 时才被调用 */
   afterHours?: (symbols: string[]) => Promise<Map<string, AfterHoursQuote>>
 }
@@ -97,6 +101,7 @@ export function registerEstimateRoutes(
   const resolveFx = deps.resolveFx ?? (() => resolveFxRate(ctx.db))
   const fetchIndices = deps.marketIndices ?? createMarketIndicesCache()
   const readAfterHours = deps.afterHours ?? fetchAfterHours
+  const readPreMarket = deps.preMarket ?? fetchPreMarket
   // 节流状态挂在这次注册上：每个 app 实例各记各的，测试之间也不会互相吃掉 warn
   const warnThrottled = createWarnThrottle(app)
 
@@ -158,12 +163,15 @@ export function registerEstimateRoutes(
 
     // 顺序不能颠倒：东财对市场码未知的票整批返回 data:null（实测 162411 猜 105 → 0/10，正确 106 → 10/10）
     if (symbols.length > 0) await ctx.ensureMarkets(symbols, known)
-    // 三条腿并行：行情决定 navPct，净值决定金额，盘后只补第二个读数。
-    // 盘后那条腿自己吞掉所有异常，慢也不过 5 秒超时，拖不垮估值。
-    const [quotes, navs, afterHours] = await Promise.all([
+    // 四条腿并行：行情决定 navPct，净值决定金额，盘前/盘后各自只补第二个读数。
+    // 延伸时段那两条腿自己吞掉所有异常，慢也不过 5 秒超时，拖不垮估值。
+    const [quotes, navs, afterHours, preMarket] = await Promise.all([
       getQuotesSafely(app, ctx.registry, symbols),
       Promise.all(resolved.map(({ fund }) => latestNav(fund.code))),
       getAfterHoursSafely(app, readAfterHours, symbols, phase),
+      // 盘前多要两只 ETF：跟踪指数的基金用它们当"指数口径"，
+      // 否则成分权重的近似误差会直接变成估值偏差（实测能到 0.3pp）
+      getPreMarketSafely(app, readPreMarket, [...symbols, ...preMarketProxySymbols()], phase),
     ])
 
     const estimates = resolved.map((r, i) => {
@@ -197,6 +205,8 @@ export function registerEstimateRoutes(
         indexPct,
         board: boardOf(r.fund.index_key),
         afterHours,
+        preMarket,
+        preMarketIndexPct: preMarketPctFor(r.fund.index_key, preMarket),
       })
     })
 
@@ -341,6 +351,49 @@ async function getAfterHoursSafely(
     return await read(symbols)
   } catch (err) {
     app.log.warn({ err, wanted: symbols.length }, 'after-hours quotes unavailable; night row hidden')
+    return new Map()
+  }
+}
+
+/** 当前需要在盘前请求的代理 ETF 集合（去重：QQQ/SPY） */
+function preMarketProxySymbols(): string[] {
+  return [...new Set(Object.values(PRE_MARKET_PROXY_BY_INDEX))]
+}
+
+/**
+ * 跟踪指数在盘前的「指数口径」涨跌幅：取代理 ETF（NDX100→QQQ、标普500→SPY）。
+ *
+ * 主动基金没有跟踪指数，这里返回 undefined，由 buildEstimate 退回成分加权——
+ * 那条路没有官方数字可用，成分加权就是唯一诚实的答案。
+ */
+function preMarketPctFor(
+  indexKey: string | null,
+  preMarket: Map<string, AfterHoursQuote>,
+): number | undefined {
+  if (!indexKey) return undefined
+  const proxy = PRE_MARKET_PROXY_BY_INDEX[indexKey]
+  if (!proxy) return undefined
+  return preMarket.get(proxy)?.pct
+}
+
+/**
+ * 盘前行情。相位不是 pre 就直接返回空 Map——**不发请求**。
+ *
+ * 常规时段谈「盘前」是过去时，闭市后谈盘前更是没有意义；
+ * 空 Map 会让 buildEstimate 整块省掉 preMarket，界面那一行自然消失，
+ * 而不是显示「盘前 —」这种像坏掉的样子。
+ */
+async function getPreMarketSafely(
+  app: FastifyInstance,
+  read: (symbols: string[]) => Promise<Map<string, AfterHoursQuote>>,
+  symbols: string[],
+  phase: Phase,
+): Promise<Map<string, AfterHoursQuote>> {
+  if (phase !== 'pre' || symbols.length === 0) return new Map()
+  try {
+    return await read(symbols)
+  } catch (err) {
+    app.log.warn({ err, wanted: symbols.length }, 'pre-market quotes unavailable; pre row hidden')
     return new Map()
   }
 }

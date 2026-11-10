@@ -1,5 +1,5 @@
 import type { AfterHoursQuote, Holding, Phase, Quote } from '../types'
-import { estimateAfterHours } from './afterHours'
+import { estimateAfterHours, estimateExtendedHours } from './afterHours'
 import { estimateNav } from './estimate'
 
 export interface BuildInput {
@@ -31,6 +31,22 @@ export interface BuildInput {
    * 覆盖率不够或一只都没有时，buildEstimate 自己把 afterHours 整块省掉。
    */
   afterHours?: Map<string, AfterHoursQuote>
+  /**
+   * 盘前行情。只有 `phase === 'pre'` 时调用方才传。
+   *
+   * 为什么与 afterHours 分开而不是共用一份：这两个时段看到的数字**基准相同、
+   * 含义相反**——盘前是"今天还没开盘"的变化，盘后是"今天已经收完"的变化。
+   * 混在一个字段里，界面就没法说清「你现在看的是哪一段时间」。
+   */
+  preMarket?: Map<string, AfterHoursQuote>
+  /**
+   * 盘前时段「指数口径」的涨跌幅（来自跟踪同一指数的 ETF，如 NDX100→QQQ）。
+   *
+   * 有它就用它，而不是拿成分自算：成分权重是我们按市值归一化的近似，
+   * 而指数用的是修正市值加权，大盘股分化时能差 0.3pp（实测 2026-11-10 盘前）。
+   * 与常规时段「有官方指数涨跌幅就用官方」是同一条原则。
+   */
+  preMarketIndexPct?: number
 }
 
 export interface FundEstimate {
@@ -83,6 +99,30 @@ export interface FundEstimate {
     /** 盘后最新成交时刻 */
     asOfMs: number
   }
+  /**
+   * 盘前估值的第二组数字。**可选**：只有 `phase === 'pre'`、且拿到盘前成交、
+   * 覆盖率过 0.3 才出现。
+   *
+   * 与 navPct 的关系是**先后两段**而不是"覆盖"：navPct 是上一交易日收盘那一段
+   * （常规接口在盘前只给这个），这一块是今天盘前进行中的那一段。两个数都真，
+   * 但只有这一块是"现在"。
+   */
+  preMarket?: {
+    navPct: number
+    amount: number
+    /** 有盘前成交的成分权重之和（0~1） */
+    coveredWeight: number
+    /** 盘前最后一笔成交时刻 */
+    asOfMs: number
+    /**
+     * 这条盘前数字的口径：
+     * - `index`：跟踪指数的 ETF（QQQ/SPY）盘前涨跌 + 汇率腿 × exposure
+     * - `constituents`：成分权重加权（主动基金只有这一条路）
+     */
+    basis: 'index' | 'constituents'
+    /** 成分口径的原始加权涨跌（百分数）。与 basis='index' 同时存在时可用于对账 */
+    constituentPct?: number
+  }
 }
 
 /**
@@ -128,6 +168,43 @@ export function buildEstimate(input: BuildInput): FundEstimate {
       })
     : null
 
+  // 盘前那条腿。两条口径：
+  // ① 有指数代理（QQQ/SPY）→ 用 ETF 涨跌，和常规时段用官方指数涨跌幅同理；
+  // ② 没有（主动基金）→ 退回成分加权，同一道 0.3 覆盖率门槛。
+  const preConstituents = input.preMarket
+    ? estimateExtendedHours({
+        holdings,
+        afterHours: input.preMarket,
+        fxNow: input.fxNow,
+        fxPrev: input.fxPrev,
+        exposure: input.exposure,
+      })
+    : null
+  const preIndex =
+    input.preMarketIndexPct !== undefined && Number.isFinite(input.preMarketIndexPct)
+      ? input.preMarketIndexPct
+      : undefined
+  const preFx = input.fxPrev > 0 ? input.fxNow / input.fxPrev - 1 : 0
+  const preMarket =
+    preIndex !== undefined
+      ? {
+          navPct: input.exposure * ((1 + preIndex / 100) * (1 + preFx) - 1) * 100,
+          amount: 0, // 下面用 base 补
+          coveredWeight: 1,
+          asOfMs: input.preMarket?.values().next().value?.tsMs ?? 0,
+          basis: 'index' as const,
+          ...(preConstituents ? { constituentPct: preConstituents.stockPct } : {}),
+        }
+      : preConstituents
+        ? {
+            navPct: preConstituents.navPct,
+            amount: 0,
+            coveredWeight: preConstituents.coveredWeight,
+            asOfMs: preConstituents.asOfMs,
+            basis: 'constituents' as const,
+          }
+        : null
+
   return {
     code: input.code,
     name: input.name,
@@ -153,6 +230,14 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     excluded: { hk: input.excludedHk ?? 0 },
     missing,
     breakdown: result.breakdown,
+    ...(preMarket && input.phase === 'pre'
+      ? {
+          preMarket: {
+            ...preMarket,
+            amount: base * (preMarket.navPct / 100),
+          },
+        }
+      : {}),
     ...(afterHours
       ? {
           afterHours: {

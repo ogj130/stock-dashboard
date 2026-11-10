@@ -5,7 +5,10 @@ import type { MarketStatus, Phase } from '../types'
  * 美东冬夏令时每年切换两次，硬编码必错。
  */
 export function derivePhase(status: MarketStatus): Phase {
-  return status === 'PRE_MKT' || status === 'REG_MKT' ? 'live' : 'settled'
+  // 盘前必须独立成相：这个时段常规行情接口返回的是**上一交易日收盘**，
+  // 混进 live 就会显示一个看着正常、其实是昨天的涨幅
+  if (status === 'PRE_MKT') return 'pre'
+  return status === 'REG_MKT' ? 'live' : 'settled'
 }
 
 /** 盘前流动性薄，价格跳动大，只能作为参考，不得覆盖已定的夜间估值 */

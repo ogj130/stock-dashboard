@@ -7,6 +7,7 @@ import {
   tailPoints,
   type CompactFund,
 } from './compact'
+import { preViewFunds, type PreViewFund } from './preView'
 import './compact.css'
 
 /**
@@ -20,10 +21,16 @@ import './compact.css'
 
 const REFRESH_MS = 5000
 
+/**
+ * 盘前换算需要净值、份额、成本这三样（市值与持有收益要跟着重算），
+ * 它们服务端一直都有，只是卡片平时不显示。多带上不影响 CompactFund 的契约。
+ */
+interface CardFund extends CompactFund, PreViewFund {}
+
 /** 只声明用到的字段：卡片不读 breakdown，也就不为它承担类型耦合 */
 interface EstimateLite {
-  funds: CompactFund[]
-  phase: 'live' | 'settled'
+  funds: CardFund[]
+  phase: 'pre' | 'live' | 'settled'
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -75,9 +82,12 @@ export default function CompactCard() {
     }
   }, [])
 
+  const phase = data?.phase ?? 'settled'
+  // 卡片是「一眼看现在」用的：盘前就显示盘前那一段，绝不拿昨天的收盘涨幅当今天
+  const rawFunds: CardFund[] = data?.funds ?? []
   const view = deriveCompactView({
-    funds: data?.funds ?? [],
-    phase: data?.phase ?? 'settled',
+    funds: phase === 'pre' ? preViewFunds(rawFunds) : rawFunds,
+    phase,
     updatedAt,
     loaded,
     error,

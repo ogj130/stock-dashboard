@@ -8,6 +8,7 @@ import PortfolioChart, {
 import { afterHoursClock, summarizeAfterHours, type AfterHoursLite } from './afterHours'
 import { money, pctText, signedMoney, tone } from './format'
 import { weightChip, type WeightChipInput } from './weightChip'
+import { preViewFunds } from './preView'
 
 /**
  * 与 src/engine/pipeline.ts 的 FundEstimate 一一对应。
@@ -27,7 +28,7 @@ type WeightsFrom = 'index' | 'top10' | 'none'
 interface FundEstimate {
   code: string
   name: string
-  phase: 'live' | 'settled'
+  phase: 'pre' | 'live' | 'settled'
   navPct: number
   nav: number
   shares: number
@@ -54,8 +55,17 @@ interface FundEstimate {
   breakdown: Breakdown[]
   /** 关联板块（跟踪指数的中文名）；null 表示没配 index_key */
   board: string | null
-  /** 夜盘读数。没有盘后行情 / 覆盖率 < 30% / 盘中时后端根本不发这个键 */
+  /** 夜盘读数。没有盘后行情 / 覆盖率 < 30% / 非收盘相时后端根本不发这个键 */
   afterHours?: AfterHoursLite
+  /**
+   * 盘前读数（相对上一交易日收盘）。只有盘前相且拿到成交才有。
+   * `basis` 说明这条数字的口径：index=用跟踪指数 ETF（QQQ/SPY），
+   * constituents=成分加权（主动基金走这条）。
+   */
+  preMarket?: AfterHoursLite & {
+    basis: 'index' | 'constituents'
+    constituentPct?: number
+  }
 }
 
 interface FxLeg {
@@ -78,7 +88,7 @@ interface MarketIndex {
 
 interface EstimateResponse {
   funds: FundEstimate[]
-  phase: 'live' | 'settled'
+  phase: 'pre' | 'live' | 'settled'
   targetNavDate: string
   fx: FxLeg | null
   marketIndices: MarketIndex[]
@@ -112,6 +122,34 @@ function readStoredRange(): RangeKey {
  * 把它当成基金涨跌展示就是在骗人，所以整行必须走「行情不可用 / 无覆盖」分支。
  */
 const uncovered = (f: FundEstimate) => f.coveredWeight === 0
+
+/** 盘前与盘中都按 5 秒刷新；文案分开，是因为「现在看的是哪一段行情」必须一眼看出 */
+const PHASE_TEXT: Record<'pre' | 'live' | 'settled', string> = {
+  pre: '盘前 · 5 秒刷新',
+  live: '盘中 · 5 秒刷新',
+  settled: '美股已收盘 · 待公布净值',
+}
+
+/**
+ * 盘前视图：把 preMarket 那组数字铺到主字段上，让表格/汇总/排序都看同一份数。
+ *
+ * 市值与持有收益必须跟着重算，否则会出现「涨跌是盘前的、金额是昨收的」
+ * 这种一眼看不出来的错位——那是比不显示更坏的展示。
+ * 没有盘前读数（覆盖率不足或取数失败）的基金原样返回，仍显示昨收数字，
+ * 由 chips 里的「盘前无成交」提示说明为什么没跟着变。
+ */
+function applyPreView(f: FundEstimate): FundEstimate {
+  const pm = f.preMarket
+  if (!pm) return f
+  const marketValue = f.nav * f.shares * (1 + pm.navPct / 100)
+  return {
+    ...f,
+    navPct: pm.navPct,
+    amount: pm.amount,
+    marketValue,
+    holdingProfit: marketValue - f.costBasis,
+  }
+}
 
 /** 持有收益率：分母是成本，成本为 0 时没有定义，界面显示「—」而不是 0% 或 Infinity */
 function holdingProfitPct(f: FundEstimate): number | null {
@@ -173,6 +211,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
+  /** 盘前相看哪一段：'pre' = 今天盘前（默认），'close' = 上一交易日收盘 */
+  const [preMode, setPreMode] = useState<'pre' | 'close'>('pre')
   const [loaded, setLoaded] = useState(false)
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
   /** 'all' 或某个板块名 */
@@ -282,6 +322,7 @@ export default function App() {
 
   const funds = data?.funds ?? []
   const phase = data?.phase ?? 'settled'
+  const preAvailable = funds.some((f) => f.preMarket !== undefined)
   const fx = data?.fx ?? null
   const marketIndices = data?.marketIndices ?? []
 
@@ -299,8 +340,20 @@ export default function App() {
     if (tab !== 'all' && !boards.includes(tab)) setTab('all')
   }, [tab, boards])
 
+  /**
+   * 盘前视图。
+   *
+   * 盘前时段后端给两组数：navPct 是**上一交易日收盘**那一段（常规接口只会给这个），
+   * preMarket 是今天盘前进行中的那一段。默认看盘前（那才是"现在"），
+   * 也允许切回昨收——盘前成交薄，想确认"昨天到底涨了多少"时得能切回去。
+   * 切换在视图层做：把 preMarket 的数字铺到 navPct/amount/marketValue 上，
+   * 下面所有表格、汇总、排序、排序用的都是同一份数，不会出现表头与行不一致。
+   */
+  const showPre = phase === 'pre' && preMode === 'pre'
+  const viewFunds = useMemo(() => (showPre ? preViewFunds(funds) : funds), [funds, showPre])
+
   const visible = useMemo(() => {
-    const filtered = tab === 'all' ? funds : funds.filter((f) => f.board === tab)
+    const filtered = tab === 'all' ? viewFunds : viewFunds.filter((f) => f.board === tab)
     const valueOf = (f: FundEstimate): number | null => {
       if (sort.key === 'amount') return uncovered(f) ? null : f.amount
       if (sort.key === 'board') return indexForBoard(marketIndices, f.board)?.pct ?? null
@@ -324,7 +377,7 @@ export default function App() {
     const pinned = sorted.find((f) => f.code === openCode)
     if (!pinned) return sorted
     return [pinned, ...sorted.filter((f) => f.code !== openCode)]
-  }, [funds, tab, sort, marketIndices, openCode])
+  }, [viewFunds, tab, sort, marketIndices, openCode])
 
   // 汇总永远可见，但只统计当前 tab 的持仓——表头的数字必须和下面的行对得上
   const valued = visible.filter((f) => !uncovered(f))
@@ -399,12 +452,35 @@ export default function App() {
           </div>
           <div className="phase">
             <span className="phase-item">
-              <span className={`dot ${phase === 'live' ? 'live' : ''}`} />
-              {phase === 'live' ? '盘中 · 5 秒刷新' : '美股已收盘 · 待公布净值'}
+              <span className={`dot ${phase}`} />
+              {PHASE_TEXT[phase]}
             </span>
             <span className="sep">·</span>
             <span className="phase-item">净值日 {data?.targetNavDate ?? '—'}</span>
           </div>
+          {phase === 'pre' && preAvailable && (
+            <div className="phase">
+              {/* 盘前成交薄，两者都可能想看：默认「盘前」（那是现在），可切回「昨收」核对 */}
+              <span className="seg" role="group" aria-label="估值口径">
+                <button
+                  type="button"
+                  className={preMode === 'pre' ? 'on' : ''}
+                  aria-pressed={preMode === 'pre'}
+                  onClick={() => setPreMode('pre')}
+                >
+                  盘前
+                </button>
+                <button
+                  type="button"
+                  className={preMode === 'close' ? 'on' : ''}
+                  aria-pressed={preMode === 'close'}
+                  onClick={() => setPreMode('close')}
+                >
+                  昨收
+                </button>
+              </span>
+            </div>
+          )}
           {fx && (
             <div className="phase">
               <span className="fx">
@@ -523,6 +599,18 @@ export default function App() {
                     {/* 规则 2：港股是「已排除」而不是「没算」，不说清楚会像 bug */}
                     {f.excluded.hk > 0 && (
                       <span className="chip warn">含港股 {f.excluded.hk} 只，已排除</span>
+                    )}
+                    {/* 盘前：说清这条数字用的是哪套口径，以及为什么某只没跟着变 */}
+                    {phase === 'pre' && showPre && (
+                      f.preMarket ? (
+                        <span className="chip pre">
+                          盘前 · {f.preMarket.basis === 'index' ? '指数口径' : '成分口径'}
+                        </span>
+                      ) : (
+                        // 原因可能是「这只票没盘前成交」也可能是「整个基金覆盖率不足 30%」，
+                        // 统一说「暂无读数」而不猜是哪一种——猜错了用户会去查错方向
+                        <span className="chip warn">暂无盘前读数，显示昨收</span>
+                      )
                     )}
                     {/* 规则 3+4：口径降级。文案差别是「下一步该做什么」，见 weightChip.ts */}
                     <WeightChip fund={f} />

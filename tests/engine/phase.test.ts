@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { derivePhase, isPreMarket, derivePhaseLocal } from '../../src/engine/phase'
 
 describe('phase', () => {
-  it('盘中与盘前都是 live', () => {
+  it('盘中是 live，盘前单独成相', () => {
     expect(derivePhase('REG_MKT')).toBe('live')
-    expect(derivePhase('PRE_MKT')).toBe('live')
+    // 盘前不能并进 live：那一段常规接口给的是上一交易日收盘，
+    // 混在一起界面就会把「昨天的涨幅」当成本刻行情
+    expect(derivePhase('PRE_MKT')).toBe('pre')
   })
   it('盘后与闭市都是 settled', () => {
     expect(derivePhase('POST_MKT')).toBe('settled')
