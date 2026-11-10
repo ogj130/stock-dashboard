@@ -9,6 +9,7 @@ import {
   parseRange,
   rangeFromHours,
   readHistory,
+  preSessionWindow,
   recordSnapshot,
   sessionWindow,
 } from '../../src/store/portfolio'
@@ -265,7 +266,17 @@ describe('recordSnapshot · 三个指标一起落库', () => {
     expect(row.fund_count).toBe(2)
 
     const points = listWindow(db, { startMs: now - MIN, endMs: now + MIN })
-    expect(points).toEqual([{ tsMs: now, value: 100_000, amount: -120.5, profit: 15_907.66 }])
+    // 非盘前时段落的点没有盘前口径：null 而不是 0（0 会在图上画出断崖）
+    expect(points).toEqual([
+      {
+        tsMs: now,
+        value: 100_000,
+        amount: -120.5,
+        profit: 15_907.66,
+        valuePre: null,
+        amountPre: null,
+      },
+    ])
   })
 
   it('持有收益可以是负数（浮亏），不被 default/约束吃掉', () => {
@@ -296,5 +307,86 @@ describe('recordSnapshot · 三个指标一起落库', () => {
       recordSnapshot(db, { value: 101_000, amount: 2, profit: 600, fundCount: 2 }, now + SNAPSHOT_THROTTLE_MS),
     ).toBe(true)
     expect((db.prepare('select count(*) c from portfolio_snapshot').get() as { c: number }).c).toBe(2)
+  })
+})
+
+describe('preSessionWindow · 盘前那一段', () => {
+  // 盘前是**今天**那一段（04:00–09:30 美东）。常规窗口的规则「还没开盘就退回
+  // 上一个工作日」用在这里会把横轴指到昨天 09:30–16:00，
+  // 于是头部写「盘前 -0.24%」、图画着昨天那一场，两处自相矛盾。
+  it('盘前时段内：今天 04:00 → 现在（不越过 09:30）', () => {
+    const db = openDb(':memory:')
+    seed(db, [et(2026, 11, 10, 5, 0)])
+    const now = et(2026, 11, 10, 6, 15)
+    const w = preSessionWindow(db, now)
+    expect(etText(w.startMs)).toBe('11/10/2026, 04:00')
+    expect(etText(w.endMs)).toBe('11/10/2026, 06:15')
+  })
+
+  it('过了开盘时刻：右端钉在 09:30（盘前不含常规时段）', () => {
+    const db = openDb(':memory:')
+    seed(db, [et(2026, 11, 10, 5, 0)])
+    const w = preSessionWindow(db, et(2026, 11, 10, 11, 0))
+    expect(etText(w.endMs)).toBe('11/10/2026, 09:30')
+  })
+
+  it('凌晨四点前：退回上一个工作日的整段盘前', () => {
+    const db = openDb(':memory:')
+    seed(db, [et(2026, 11, 9, 6, 0)])
+    const w = preSessionWindow(db, et(2026, 11, 10, 3, 0))
+    expect(etText(w.startMs)).toBe('11/09/2026, 04:00')
+    expect(etText(w.endMs)).toBe('11/09/2026, 09:30')
+  })
+
+  it('周末：退到上周五的盘前', () => {
+    const db = openDb(':memory:')
+    seed(db, [et(2026, 11, 6, 6, 0)])
+    const w = preSessionWindow(db, et(2026, 11, 8, 12, 0))
+    expect(etText(w.startMs)).toBe('11/06/2026, 04:00')
+  })
+
+  it('盘前窗口与常规窗口不是同一个窗口（否则切口径等于没切）', () => {
+    const db = openDb(':memory:')
+    seed(db, [et(2026, 11, 10, 5, 0)])
+    const now = et(2026, 11, 10, 6, 0)
+    const pre = preSessionWindow(db, now)
+    const regular = sessionWindow(db, now)
+    expect(pre.startMs).not.toBe(regular.startMs)
+  })
+
+  it('readHistory 传 pre 才用盘前窗口（默认行为一个字都不变）', () => {
+    const db = openDb(':memory:')
+    // 两天都落点：否则常规窗口找不到数据会顺工作日往前退，退到哪儿取决于回溯次数
+    seed(db, [et(2026, 11, 9, 11, 0), et(2026, 11, 10, 5, 0)])
+    const now = et(2026, 11, 10, 6, 0)
+    const pre = readHistory(db, 'session', now, undefined, 'pre')
+    const regular = readHistory(db, 'session', now)
+    expect(etText(pre.startMs)).toBe('11/10/2026, 04:00')
+    expect(etText(regular.startMs)).toBe('11/09/2026, 09:30')
+  })
+})
+
+describe('recordSnapshot · 盘前口径', () => {
+  it('传了盘前就落两列，没传就是 null（不是 0）', () => {
+    const db = openDb(':memory:')
+    const t1 = et(2026, 11, 10, 5, 0)
+    recordSnapshot(db, {
+      value: 238_000,
+      amount: 7_500,
+      profit: 15_000,
+      fundCount: 16,
+      valuePre: 237_400,
+      amountPre: -600,
+    }, t1)
+    recordSnapshot(db, {
+      value: 238_000,
+      amount: 7_500,
+      profit: 15_000,
+      fundCount: 16,
+    }, t1 + SNAPSHOT_THROTTLE_MS + 1)
+
+    const points = listWindow(db, { startMs: t1 - MIN, endMs: t1 + 2 * MIN })
+    expect(points.map((p) => p.valuePre)).toEqual([237_400, null])
+    expect(points.map((p) => p.amountPre)).toEqual([-600, null])
   })
 })

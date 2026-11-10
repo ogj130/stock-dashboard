@@ -101,9 +101,9 @@ describe('db schema', () => {
     expect(rows[0].model_pct).toBeCloseTo(1.3, 6)
   })
 
-  it('v6 之后 SCHEMA_VERSION 为 6，且重复 migrate 不重复执行 v2/v3', () => {
+  it('v7 之后 SCHEMA_VERSION 为 7，且重复 migrate 不重复执行 v2/v3', () => {
     const db = openDb(':memory:')
-    expect(SCHEMA_VERSION).toBe(6)
+    expect(SCHEMA_VERSION).toBe(7)
     expect(() => migrate(db)).not.toThrow()
     const idx = db.prepare("select name from sqlite_master where type='index' and name='idx_estimate_day'").all()
     expect(idx).toHaveLength(1)
@@ -120,9 +120,13 @@ describe('db schema v4 · portfolio_snapshot', () => {
     }>
     expect(cols.map((c) => c.name)).toEqual([
       'id', 'ts_ms', 'total_value', 'total_amount', 'fund_count', 'total_profit',
+      // v7：盘前口径（可空，历史行没有这个口径）
+      'total_value_pre', 'total_amount_pre',
     ])
-    // 五个业务字段都不许为空：缺 ts 画不了横轴，缺 value 画不了纵轴
-    expect(cols.filter((c) => c.name !== 'id').every((c) => c.notnull === 1)).toBe(true)
+    // 收盘口径的字段都不许为空：缺 ts 画不了横轴，缺 value 画不了纵轴。
+    // 盘前两列是例外——v6 之前的历史行没有这个口径，用 0 顶替会画出断崖
+    const nullable = new Set(['id', 'total_value_pre', 'total_amount_pre'])
+    expect(cols.filter((c) => !nullable.has(c.name)).every((c) => c.notnull === 1)).toBe(true)
 
     const idx = db
       .prepare("select name from sqlite_master where type='index' and tbl_name='portfolio_snapshot'")
@@ -301,10 +305,12 @@ describe('db schema v3 · covered_weight 浮点漂移（S5）', () => {
 })
 
 describe('db schema v6 · 盘前相位', () => {
-  /** 退回 v5 形状：estimate_log 的 phase 只允许 live/settled */
+  /** 退回 v5 形状：estimate_log 的 phase 只允许 live/settled，且没有 v7 的盘前列 */
   function v5Db() {
     const db = openDb(':memory:')
     db.exec(`
+      alter table portfolio_snapshot drop column total_value_pre;
+      alter table portfolio_snapshot drop column total_amount_pre;
       drop table estimate_log;
       create table estimate_log (
         id integer primary key autoincrement,

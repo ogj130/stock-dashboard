@@ -45,6 +45,12 @@ export interface PortfolioPoint {
   amount: number
   /** 累计持有收益 Σ(市值 − 成本)（可为负；v5 之前的历史行是 0） */
   profit: number
+  /**
+   * 盘前口径的总市值 / 盘前这一段的收益。**只有盘前时段落的点才有**，
+   * 其余时刻（以及 v6 之前的历史行）是 null —— 用 0 占位会在图上画出断崖。
+   */
+  valuePre: number | null
+  amountPre: number | null
 }
 
 export interface HistoryWindow {
@@ -189,6 +195,9 @@ export function etWallClock(atMs: number): EtWallClock {
 /** 开盘 09:30，以「当天分钟数」表示，比较时不用再拆时和分 */
 const SESSION_OPEN_MINUTES = 9 * 60 + 30
 
+/** 盘前 04:00 开始（美东）。盘前也是一段有时段边界的行情，和 09:30 同样需要窗口 */
+const PRE_OPEN_MINUTES = 4 * 60
+
 interface Ymd {
   y: number
   m: number
@@ -210,6 +219,52 @@ function fullSession(day: Ymd): HistoryWindow {
     startMs: etWallClockToUtcMs(day.y, day.m, day.d, 9, 30),
     endMs: etWallClockToUtcMs(day.y, day.m, day.d, 16, 0),
   }
+}
+
+/** 一个完整盘前时段的边界（04:00–09:30 美东） */
+function fullPreSession(day: Ymd): HistoryWindow {
+  return {
+    startMs: etWallClockToUtcMs(day.y, day.m, day.d, 4, 0),
+    endMs: etWallClockToUtcMs(day.y, day.m, day.d, 9, 30),
+  }
+}
+
+/**
+ * 「最近一个盘前时段」的窗口。
+ *
+ * 为什么需要它：盘前是**今天**那一段（04:00–09:30 美东），而常规窗口的规则
+ * 「还没开盘就退回上一个工作日」在盘前时段会把横轴指到昨天 09:30–16:00——
+ * 于是头部写着「盘前 −0.24%」，图却画着昨天那一场，两处数字互相矛盾。
+ *
+ * 规则与常规窗口同构：今天是工作日且已过 04:00 → 今天 04:00 到 min(现在, 09:30)；
+ * 否则退回上一个工作日的整段盘前。节假日同样靠「这段有没有数据」反推，最多退 5 天。
+ */
+export function preSessionWindow(db: Db, now: number = Date.now()): HistoryWindow {
+  const clock = etWallClock(now)
+  const minutes = clock.hour * 60 + clock.minute
+  const isWeekday = clock.weekday >= 1 && clock.weekday <= 5
+
+  let day: Ymd = { y: clock.year, m: clock.month, d: clock.day }
+  let window: HistoryWindow
+
+  if (isWeekday && minutes >= PRE_OPEN_MINUTES) {
+    window = { startMs: fullPreSession(day).startMs, endMs: Math.min(now, fullPreSession(day).endMs) }
+  } else {
+    day = previousWeekday(day)
+    window = fullPreSession(day)
+  }
+
+  const hasAny = db.prepare('select 1 as hit from portfolio_snapshot limit 1').get() !== undefined
+  if (!hasAny) return window
+
+  const hit = db.prepare(
+    'select 1 as hit from portfolio_snapshot where ts_ms >= ? and ts_ms <= ? limit 1',
+  )
+  for (let i = 0; i < 5 && hit.get(window.startMs, window.endMs) === undefined; i++) {
+    day = previousWeekday(day)
+    window = fullPreSession(day)
+  }
+  return window
 }
 
 /**
@@ -268,7 +323,15 @@ export function sessionWindow(db: Db, now: number = Date.now()): HistoryWindow {
  */
 export function recordSnapshot(
   db: Db,
-  sample: { value: number; amount: number; profit: number; fundCount: number },
+  sample: {
+    value: number
+    amount: number
+    profit: number
+    fundCount: number
+    /** 盘前口径；非盘前时段不传，落 NULL */
+    valuePre?: number
+    amountPre?: number
+  },
   now: number = Date.now(),
 ): boolean {
   const newest = db
@@ -277,9 +340,18 @@ export function recordSnapshot(
   if (newest && now - newest.ts_ms < SNAPSHOT_THROTTLE_MS) return false
 
   db.prepare(
-    `insert into portfolio_snapshot (ts_ms, total_value, total_amount, total_profit, fund_count)
-     values (?,?,?,?,?)`,
-  ).run(now, sample.value, sample.amount, sample.profit, sample.fundCount)
+    `insert into portfolio_snapshot
+       (ts_ms, total_value, total_amount, total_profit, fund_count, total_value_pre, total_amount_pre)
+     values (?,?,?,?,?,?,?)`,
+  ).run(
+    now,
+    sample.value,
+    sample.amount,
+    sample.profit,
+    sample.fundCount,
+    sample.valuePre ?? null,
+    sample.amountPre ?? null,
+  )
   return true
 }
 
@@ -292,7 +364,8 @@ export function listWindow(
   const rows = db
     .prepare(
       `select ts_ms as tsMs, total_value as value, total_amount as amount,
-              total_profit as profit
+              total_profit as profit, total_value_pre as valuePre,
+              total_amount_pre as amountPre
          from portfolio_snapshot
         where ts_ms >= ? and ts_ms <= ?
         order by ts_ms asc`,
@@ -302,17 +375,23 @@ export function listWindow(
   return downsample(rows, maxPoints)
 }
 
+/** 盘前视图要用盘前的窗口，否则「今日」指的是昨天那一场 */
+export type SessionKind = 'regular' | 'pre'
+
 /** 按档位取一个窗口的数据；路由只需要这一个入口 */
 export function readHistory(
   db: Db,
   range: HistoryRange,
   now: number = Date.now(),
   maxPoints: number = HISTORY_MAX_POINTS,
+  session: SessionKind = 'regular',
 ): HistoryResult {
   const window: HistoryWindow =
-    range === 'session'
-      ? sessionWindow(db, now)
-      : { startMs: now - RANGE_SPAN_MS[range], endMs: now }
+    range !== 'session'
+      ? { startMs: now - RANGE_SPAN_MS[range], endMs: now }
+      : session === 'pre'
+        ? preSessionWindow(db, now)
+        : sessionWindow(db, now)
   return { range, ...window, points: listWindow(db, window, maxPoints) }
 }
 

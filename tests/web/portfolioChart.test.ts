@@ -15,14 +15,25 @@ import {
   type HistoryPoint,
   type MetricKey,
   type RangeKey,
+  preDeltaSummary,
+  preSessionPoints,
 } from '../../web/PortfolioChart'
+import { pctText } from '../../web/format'
 import { HISTORY_RANGES, type HistoryRange } from '../../src/store/portfolio'
 
 const p = (
   value: number,
   tsMs = 0,
   extra: Partial<Pick<HistoryPoint, 'amount' | 'profit'>> = {},
-): HistoryPoint => ({ tsMs, value, amount: 0, profit: 0, ...extra })
+): HistoryPoint => ({
+  tsMs,
+  value,
+  amount: 0,
+  profit: 0,
+  valuePre: null,
+  amountPre: null,
+  ...extra,
+})
 
 /**
  * 曲线是纯函数算出来的几何，所以三种退化情况能在 node 里直接钉住：
@@ -147,9 +158,9 @@ describe('档位键与后端同构', () => {
 describe('buildGeometry · 纵轴跟着选中的序列走', () => {
   // 同一批点：总资产 8 万上下，当日收益 ±几百。量级差两个数量级。
   const points: HistoryPoint[] = [
-    { tsMs: 0, value: 80_000, amount: -420.5, profit: 0 },
-    { tsMs: 1, value: 84_568, amount: 120, profit: 0 },
-    { tsMs: 2, value: 84_321, amount: 569.46, profit: 0 },
+    { tsMs: 0, value: 80_000, amount: -420.5, profit: 0, valuePre: null, amountPre: null },
+    { tsMs: 1, value: 84_568, amount: 120, profit: 0, valuePre: null, amountPre: null },
+    { tsMs: 2, value: 84_321, amount: 569.46, profit: 0, valuePre: null, amountPre: null },
   ]
 
   it('总资产：纵轴是总资产区间，不画零线（存量恒为正）', () => {
@@ -207,8 +218,8 @@ describe('buildGeometry · 纵轴跟着选中的序列走', () => {
 
 describe('deltaSummary · 角落那句话必须跟指标对口径', () => {
   const points: HistoryPoint[] = [
-    { tsMs: 0, value: 50_000, amount: 0, profit: 12_000 },
-    { tsMs: 1, value: 50_569.46, amount: 7_515.49, profit: 15_907.66 },
+    { tsMs: 0, value: 50_000, amount: 0, profit: 12_000, valuePre: null, amountPre: null },
+    { tsMs: 1, value: 50_569.46, amount: 7_515.49, profit: 15_907.66, valuePre: null, amountPre: null },
   ]
 
   it('总资产：窗口内变化 + 百分比（百分比只对存量有意义）', () => {
@@ -234,12 +245,18 @@ describe('deltaSummary · 角落那句话必须跟指标对口径', () => {
 
   it('颜色按最新值的符号：负数走绿（跌），零算持平', () => {
     const negative: HistoryPoint[] = [
-      { tsMs: 0, value: 1, amount: 800, profit: 0 },
-      { tsMs: 1, value: 1, amount: -500, profit: 0 },
+      { tsMs: 0, value: 1, amount: 800, profit: 0, valuePre: null, amountPre: null },
+      { tsMs: 1, value: 1, amount: -500, profit: 0, valuePre: null, amountPre: null },
     ]
     expect(deltaSummary(negative, 'amount', '今日').tone).toBe('down')
     expect(deltaSummary(negative, 'amount', '今日').text).toBe('今日 -500.00')
-    expect(deltaSummary([{ tsMs: 0, value: 1, amount: 0, profit: 0 }], 'amount', '今日').tone).toBe('flat')
+    expect(
+      deltaSummary(
+        [{ tsMs: 0, value: 1, amount: 0, profit: 0, valuePre: null, amountPre: null }],
+        'amount',
+        '今日',
+      ).tone,
+    ).toBe('flat')
   })
 
   it('空数据与单点：总资产说「—」而不是 0.00，收益类仍给水平值', () => {
@@ -268,5 +285,46 @@ describe('指标键与后端字段同构', () => {
   it('localStorage 读不到（node 环境没有 window / 隐私模式抛错）时退回总资产', () => {
     expect(METRIC_STORAGE_KEY).toBe('pf-chart-metric')
     expect(readStoredMetric()).toBe('value')
+  })
+})
+
+describe('preSessionPoints', () => {
+  it('只留带盘前口径的点，并把盘前数铺到 value/amount', () => {
+    const pts = [
+      { tsMs: 1, value: 238_000, amount: 7_500, profit: 15_000, valuePre: null, amountPre: null },
+      { tsMs: 2, value: 238_000, amount: 7_500, profit: 15_000, valuePre: 237_400, amountPre: -600 },
+    ]
+    expect(preSessionPoints(pts)).toEqual([
+      { tsMs: 2, value: 237_400, amount: -600, profit: 15_000, valuePre: 237_400, amountPre: -600 },
+    ])
+  })
+
+  it('一个都没有 → 空数组（前端显示暂无数据，而不是画一条贴着 0 的假线）', () => {
+    expect(
+      preSessionPoints([
+        { tsMs: 1, value: 1, amount: 0, profit: 0, valuePre: null, amountPre: null },
+      ]),
+    ).toEqual([])
+  })
+})
+
+describe('preDeltaSummary', () => {
+  const pts = [
+    { tsMs: 1, value: 237_500, amount: -500, profit: 15_000, valuePre: 237_500, amountPre: -500 },
+    { tsMs: 2, value: 237_400, amount: -600, profit: 15_000, valuePre: 237_400, amountPre: -600 },
+  ]
+
+  it('变化量取最后一笔的累计，而不是「首末两点之差」', () => {
+    // 首末差只有 -100，但盘前这一段实际是 -600（相对收盘）
+    expect(preDeltaSummary(pts, '今日').text).toContain('-600.00')
+  })
+
+  it('百分比的分母是收盘估值（当前市值 − 累计收益）', () => {
+    const close = 237_400 + 600
+    expect(preDeltaSummary(pts, '今日').text).toContain(pctText((-600 / close) * 100))
+  })
+
+  it('空列表给「—」，不编数字', () => {
+    expect(preDeltaSummary([], '今日')).toEqual({ text: '今日 —', tone: 'flat' })
   })
 })

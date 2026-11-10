@@ -197,6 +197,16 @@ const MIGRATIONS: Array<(db: Db) => void> = [
       create index idx_estimate_ts on estimate_log(model_ts);
     `)
   },
+  // v7：盘前的第二组快照。
+  // 盘前时段「收盘口径」的总市值是个常数（上一场收盘估出来的），曲线要画的是
+  // 今天盘前这一段怎么走的，那就得单独落一列盘前口径的市值/收益。
+  // 允许为 NULL：v6 之前落的历史行没有这个口径，编一个 0 会在图上画出断崖。
+  (db) => {
+    db.exec(`
+      alter table portfolio_snapshot add column total_value_pre real;
+      alter table portfolio_snapshot add column total_amount_pre real;
+    `)
+  },
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

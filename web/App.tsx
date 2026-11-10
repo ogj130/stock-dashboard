@@ -231,6 +231,9 @@ export default function App() {
 
   const aliveRef = useRef(true)
 
+  // 曲线也要跟着口径走：盘前视图要盘前那一场的窗口与点位，否则头部写盘前、图是昨天
+  const historySession = data?.phase === 'pre' && preMode === 'pre' ? 'pre' : 'regular'
+
   const load = useCallback(async () => {
     if (typeof document !== 'undefined' && document.hidden) return
     try {
@@ -238,7 +241,9 @@ export default function App() {
         getJson<EstimateResponse>('/api/estimate'),
         getJson<{ funds: FundRowLite[] }>('/api/funds'),
         // 曲线失败不许拖垮估值：取不到就沿用上一轮的点，页面照常跳数字
-        getJson<HistoryResponse>(`/api/portfolio/history?range=${chartRange}`).catch(() => null),
+        getJson<HistoryResponse>(
+          `/api/portfolio/history?range=${chartRange}&phase=${historySession}`,
+        ).catch(() => null),
       ])
       if (!aliveRef.current) return
       const map: Record<string, number> = {}
@@ -254,8 +259,9 @@ export default function App() {
     } finally {
       if (aliveRef.current) setLoaded(true)
     }
-    // chartRange 进依赖：换档位立刻重新取数，不用等下一个 5 秒 tick
-  }, [chartRange])
+    // chartRange / historySession 进依赖：换档位或切「盘前/昨收」立刻重新取数，
+    // 不用等下一个 5 秒 tick
+  }, [chartRange, historySession])
 
   useEffect(() => {
     aliveRef.current = true

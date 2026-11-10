@@ -143,7 +143,9 @@ describe('GET /api/portfolio/history · 数据', () => {
     // 收益为负时原样带符号回给前端，不取绝对值
     expect(body.points[2]!.profit).toBe(-4_321.1)
     // 三个指标一次给全：切换指标不需要再发请求
-    expect(Object.keys(body.points[0] ?? {}).sort()).toEqual(['amount', 'profit', 'tsMs', 'value'])
+    expect(Object.keys(body.points[0] ?? {}).sort()).toEqual([
+      'amount', 'amountPre', 'profit', 'tsMs', 'value', 'valuePre',
+    ])
   })
 
   it('空库返回空数组 + 合法窗口，而不是 500（曲线渲染成「暂无数据」）', async () => {
@@ -179,5 +181,35 @@ describe('GET /api/portfolio/history · 数据', () => {
     )
     const { body } = await history(makeApp(db), '?range=7d')
     expect(body.points).toHaveLength(HISTORY_MAX_POINTS)
+  })
+})
+
+describe('GET /api/portfolio/history · 盘前窗口', () => {
+  it('phase=pre 时 session 标为 pre，窗口是今天 04:00 起', async () => {
+    const db = openDb(':memory:')
+    const now = et(2026, 11, 10, 6, 0)
+    db.prepare(
+      'insert into portfolio_snapshot (ts_ms, total_value, total_amount, fund_count, total_value_pre, total_amount_pre) values (?,?,?,?,?,?)',
+    ).run(et(2026, 11, 10, 5, 0), 238_000, 7_500, 16, 237_400, -600)
+    const app = makeApp(db, now)
+    const { body } = await history(app, '?range=session&phase=pre')
+    expect(body.session).toBe('pre')
+    expect(body.startMs).toBe(et(2026, 11, 10, 4, 0))
+    // 盘前口径原样带出来，前端才能画盘前那条线
+    expect(body.points[0]!.valuePre).toBeCloseTo(237_400, 6)
+    expect(body.points[0]!.amountPre).toBeCloseTo(-600, 6)
+  })
+
+  it('不带 phase 时仍是常规窗口（老调用方零影响）', async () => {
+    const db = openDb(':memory:')
+    const now = et(2026, 11, 10, 11, 0)
+    db.prepare(
+      'insert into portfolio_snapshot (ts_ms, total_value, total_amount, fund_count) values (?,?,?,?)',
+    ).run(et(2026, 11, 10, 10, 0), 238_000, 7_500, 16)
+    const app = makeApp(db, now)
+    const { body } = await history(app, '?range=session')
+    expect(body.session).toBe('regular')
+    expect(body.startMs).toBe(et(2026, 11, 10, 9, 30))
+    expect(body.points[0]!.valuePre).toBeNull()
   })
 })

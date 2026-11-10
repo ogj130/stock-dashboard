@@ -20,6 +20,9 @@ export interface HistoryPoint {
   value: number
   amount: number
   profit: number
+  /** 盘前口径；非盘前时段落的点是 null */
+  valuePre: number | null
+  amountPre: number | null
 }
 
 /** 与后端 `src/store/portfolio.ts` 的 HistoryRange 一一对应（tests 里有类型同构断言） */
@@ -39,7 +42,9 @@ export function isRangeKey(value: unknown): value is RangeKey {
   return typeof value === 'string' && RANGE_OPTIONS.some((option) => option.key === value)
 }
 
-export function rangeLabel(range: RangeKey): string {
+export function rangeLabel(range: RangeKey, pre = false): string {
+  // 盘前视图里「今日」指的是今天盘前那一段，叫「今日」会让人以为含了白天
+  if (pre && range === 'session') return '盘前'
   return RANGE_OPTIONS.find((option) => option.key === range)?.label ?? '今日'
 }
 
@@ -83,7 +88,29 @@ export interface HistoryResponse {
   range: RangeKey
   startMs: number
   endMs: number
+  /**
+   * `session` 档位指的是哪一段行情：`regular` = 09:30–16:00 美东，
+   * `pre` = 04:00–09:30 美东。后端按当前相位决定，前端据此换口径与横轴。
+   */
+  session: 'regular' | 'pre'
   points: HistoryPoint[]
+}
+
+/**
+ * 盘前视图的取点。
+ *
+ * 只有盘前时段落的点才带盘前口径，其余是 null——所以这里**过滤**而不是补 0：
+ * 补 0 会在图上画出一段贴着零的假线，比缺一段更误导。
+ * 过滤后把盘前那组数铺到 value/amount 上，几何与基线计算就不用分叉了
+ * （收益类指标的基线是零线，盘前这一段正好也是相对零线看的）。
+ */
+export function preSessionPoints(points: readonly HistoryPoint[]): HistoryPoint[] {
+  const out: HistoryPoint[] = []
+  for (const p of points) {
+    if (p.valuePre === null || p.amountPre === null) continue
+    out.push({ ...p, value: p.valuePre, amount: p.amountPre })
+  }
+  return out
 }
 
 const VIEW_W = 1000
@@ -279,6 +306,26 @@ export interface DeltaSummary {
  *   · 当日收益/持有收益是**可正可负的水平值**，有意义的是最新那一跳的数
  *     （"今天赚了多少" % 什么？没有可比的基数，所以不给百分比）。
  */
+/**
+ * 盘前视图的角落数字。
+ *
+ * 为什么不能直接用 deltaSummary：盘前的 `amount` 本身就是「相对收盘的累计」，
+ * 而 `value` 的窗口首点是盘前那一段的起点——两个口径混用会出现
+ * 「总资产写着 +0.02%」（只是最近两个点的差）与「盘前 −0.24%」（整段累计）打架。
+ * 这里统一按「相对收盘」算：变化量就是最后一笔的 amount，基准是收盘估值。
+ */
+export function preDeltaSummary(points: HistoryPoint[], label: string): DeltaSummary {
+  const last = points[points.length - 1]
+  if (!last) return { text: `${label} —`, tone: 'flat' }
+  const closeValue = last.value - last.amount
+  const delta = last.amount
+  const pct = closeValue > 0 ? (delta / closeValue) * 100 : null
+  return {
+    text: `${label} ${signedMoney(delta)}${pct === null ? '' : ` (${pctText(pct)})`}`,
+    tone: tone(delta),
+  }
+}
+
 export function deltaSummary(
   points: HistoryPoint[],
   metric: MetricKey,
@@ -320,7 +367,9 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
    * 档位相反，它要重新取数，所以留在 App。
    */
   const [metric, setMetric] = useState<MetricKey>(readStoredMetric)
-  const points = data?.points ?? []
+  // 盘前视图要有盘前曲线：头部写着「盘前 −0.24%」，图却画昨天那一场，是自相矛盾
+  const isPre = data?.session === 'pre'
+  const points = isPre ? preSessionPoints(data?.points ?? []) : (data?.points ?? [])
   const geo = buildGeometry(points, metric)
   const n = points.length
   const last = points[n - 1]
@@ -328,9 +377,11 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
   // 切换档位后新一轮数据还没到：文案跟着**已有数据**的窗口，不跟着按钮走，
   // 否则会出现「标签写今日、线还是 7 日」的那种撒谎。
   const shownRange = data?.range ?? range
-  const label = rangeLabel(shownRange)
+  const label = rangeLabel(shownRange, isPre)
 
-  const delta = deltaSummary(points, metric, label)
+  // 盘前：总资产与当日收益都按「相对收盘」算，避免两处数字互相打架
+  const delta =
+    isPre && metric !== 'profit' ? preDeltaSummary(points, label) : deltaSummary(points, metric, label)
   const trend = delta.tone
   const title = metricLabel(metric)
 
@@ -381,7 +432,7 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
               aria-pressed={option.key === range}
               onClick={() => onRangeChange(option.key)}
             >
-              {option.label}
+              {option.key === 'session' && isPre ? '盘前' : option.label}
             </button>
           ))}
         </div>

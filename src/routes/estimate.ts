@@ -223,7 +223,7 @@ export function registerEstimateRoutes(
 
     // 折线图的原料。失败（表被删、磁盘满、锁超时）只记一条 warn：
     // 曲线是锦上添花，不能因为它把整条估值变成 500。
-    recordSnapshotSafely(app, ctx.db, estimates)
+    recordSnapshotSafely(app, ctx.db, estimates, phase)
 
     return {
       funds: estimates,
@@ -509,6 +509,7 @@ function recordSnapshotSafely(
   app: FastifyInstance,
   db: Db,
   estimates: FundEstimate[],
+  phase: Phase,
 ): void {
   if (estimates.length === 0) return
   try {
@@ -517,10 +518,45 @@ function recordSnapshotSafely(
     // 持有收益是「存量」：市值减成本，累计口径，和当日估算收益(amount)不是一回事。
     // 空仓/成本未填时自然为 0，曲线在新指标下就是一条贴零的直线，如实反映没记录。
     const profit = estimates.reduce((sum, e) => sum + (e.marketValue - e.costBasis), 0)
-    recordSnapshot(db, { value, amount, profit, fundCount: estimates.length })
+
+    // 盘前同时落一份盘前口径：盘前视图的曲线画的是这一组数，不能拿收盘口径顶替。
+    // 收盘市值是常数（上一场的估算结果），所以盘前市值 = 收盘市值 ×(1+盘前涨跌)，
+    // 盘前收益 = 收盘市值 × 盘前涨跌 —— 与前端 preView 的两段串联保持同一口径。
+    const preTotal = defaultsPreTotal(estimates)
+
+    recordSnapshot(db, {
+      value,
+      amount,
+      profit,
+      fundCount: estimates.length,
+      ...(phase === 'pre' && preTotal
+        ? { valuePre: preTotal.value, amountPre: preTotal.amount }
+        : {}),
+    })
   } catch (err) {
     app.log.warn({ err }, 'portfolio snapshot skipped')
   }
+}
+
+/**
+ * 盘前口径的组合汇总。没有任何一只带盘前读数时返回 null——
+ * 那种时刻画出来只会是一条贴着收盘估值的直线，不如不落这个口径。
+ */
+function defaultsPreTotal(estimates: FundEstimate[]): { value: number; amount: number } | null {
+  let value = 0
+  let amount = 0
+  let any = false
+  for (const e of estimates) {
+    const pm = e.preMarket
+    if (!pm) {
+      value += e.marketValue
+      continue
+    }
+    any = true
+    value += e.marketValue * (1 + pm.navPct / 100)
+    amount += e.marketValue * (pm.navPct / 100)
+  }
+  return any ? { value, amount } : null
 }
 
 /** index_key → 大盘行情里的指数代码，用于取官方涨跌幅 */
