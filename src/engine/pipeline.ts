@@ -49,6 +49,14 @@ export interface BuildInput {
   preMarketIndexPct?: number
 }
 
+/** 一组延伸时段行情里最新的成交时刻（没有就是 0，界面对 0 不渲染时间） */
+function latestTs(quotes: Map<string, AfterHoursQuote> | undefined): number {
+  if (!quotes) return 0
+  let latest = 0
+  for (const q of quotes.values()) if (Number.isFinite(q.tsMs) && q.tsMs > latest) latest = q.tsMs
+  return latest
+}
+
 export interface FundEstimate {
   code: string
   name: string
@@ -191,7 +199,8 @@ export function buildEstimate(input: BuildInput): FundEstimate {
           navPct: input.exposure * ((1 + preIndex / 100) * (1 + preFx) - 1) * 100,
           amount: 0, // 下面用 base 补
           coveredWeight: 1,
-          asOfMs: input.preMarket?.values().next().value?.tsMs ?? 0,
+          // 取最新一笔，而不是 Map 里的任意一条：这个时间会被显示成「更新于 04:30 ET」
+          asOfMs: latestTs(input.preMarket),
           basis: 'index' as const,
           ...(preConstituents ? { constituentPct: preConstituents.stockPct } : {}),
         }
