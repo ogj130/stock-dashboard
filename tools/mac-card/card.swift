@@ -13,10 +13,28 @@ import WebKit
 private let kAppURL = "http://127.0.0.1:5178/?compact=1"
 private let kFullURL = "http://127.0.0.1:5178/"
 private let kApiURL = "http://127.0.0.1:5178/api/estimate"
-private let kCardSize = NSSize(width: 340, height: 480)   // 上方总览 + 中间曲线 + 下方可滚动的基金列表
+private let kCardSize = NSSize(width: 340, height: 440)   // 上方总览 + 中间曲线 + 下方可滚动的基金列表
 private let kOriginXKey = "cardOriginX"
 private let kOriginYKey = "cardOriginY"
 private let kMovedKey = "cardMoved"
+
+/// borderless 窗口默认 `canBecomeKey == false`，后果是：
+///   - 失去焦点时不会 resignKey，「点外面自动收起」永远不触发
+///   - 接收不到键盘事件，Esc 关不掉
+/// 两者叠加就是「卡片弹出来遮住东西，还点不掉」。
+final class CardWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    /// Esc 收起
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            orderOut(nil)
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private var window: NSWindow!
@@ -155,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private func buildWindow() {
         let origin = savedOrigin() ?? originBelowStatusItem()
 
-        window = NSWindow(
+        window = CardWindow(
             contentRect: NSRect(origin: origin, size: kCardSize),
             styleMask: [.borderless],
             backing: .buffered,
