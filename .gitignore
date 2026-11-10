@@ -15,3 +15,4 @@ tools/mac-card/icon.iconset/
 dist-win/
 .cache/
 data/access-token.txt
+data/backups/

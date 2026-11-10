@@ -15,8 +15,9 @@ import { CnbcSource } from './sources/cnbc'
 import { SinaSource } from './sources/sina'
 import { derivePhaseLocal } from './engine/phase'
 import { defaultDbPath } from './store/path'
+import { runMaintenance } from './store/maintenance'
 import { loadOrCreateToken, registerAccessGate, resolveHost } from './net/access'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const dbPath = defaultDbPath()
 const db = openDb(dbPath)
@@ -77,6 +78,22 @@ registerEstimateRoutes(app, {
 })
 
 app.get('/api/health', async () => ({ ok: true }))
+
+/**
+ * 备份与修剪：启动跑一次，之后每 6 小时一次。
+ *
+ * 备份目录放在用户数据目录（与库同源），而不是程序目录：
+ * 程序目录会被打包/清理，而备份的目的正是防止程序目录出事。
+ */
+const backupDir = join(dirname(dbPath), 'backups')
+const MAINTENANCE_MS = 6 * 3600_000
+function maintain(): void {
+  const r = runMaintenance(db, backupDir)
+  if (r.error) app.log.warn({ err: r.error }, 'maintenance partial failure')
+  else console.log(`backup   ${r.backupFile}（清理快照 ${r.pruned} 行）`)
+}
+maintain()
+setInterval(maintain, MAINTENANCE_MS).unref()
 
 const port = Number(process.env.PORT ?? 5178)
 // 局域网默认关：手机要看得显式开（--lan 或 LAN=1）。忘了关的代价是全屋都能看你的持仓
