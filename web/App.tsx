@@ -7,6 +7,7 @@ import PortfolioChart, {
 } from './PortfolioChart'
 import { afterHoursClock, summarizeAfterHours, type AfterHoursLite } from './afterHours'
 import { money, pctText, signedMoney, tone } from './format'
+import { weightChip, type WeightChipInput } from './weightChip'
 
 /**
  * 与 src/engine/pipeline.ts 的 FundEstimate 一一对应。
@@ -43,6 +44,11 @@ interface FundEstimate {
    * 「成分是指数口径、涨跌幅却是自算的」——方法论已经换了，必须让用户看见。
    */
   indexPctAvailable: boolean
+  /**
+   * 配了跟踪指数却拿不到成分权重，退回前十大。
+   * 和 weightsFrom='top10' 且没有跟踪指数是两回事：那个要填配置，这个等重试。
+   */
+  indexWeightsUnavailable: boolean
   excluded: { hk: number }
   missing: string[]
   breakdown: Breakdown[]
@@ -518,18 +524,8 @@ export default function App() {
                     {f.excluded.hk > 0 && (
                       <span className="chip warn">含港股 {f.excluded.hk} 只，已排除</span>
                     )}
-                    {/* 规则 3：前十大权重口径系统性偏保守（实测 +0.95% vs 指数口径 +2.44%） */}
-                    {f.weightsFrom === 'top10' && (
-                      <span className="chip warn">未配置跟踪指数，估值偏保守</span>
-                    )}
-                    {f.weightsFrom === 'none' && (
-                      <span className="chip bad">未取到持仓，无法估值</span>
-                    )}
-                    {/* 规则 4：成分是指数口径、涨跌幅却退回了自算 —— 口径换了就必须说出来，
-                        否则数字看着正常却会随盘后零星成交漂（这正是「闭市后还在动」的成因） */}
-                    {f.weightsFrom === 'index' && !f.indexPctAvailable && (
-                      <span className="chip warn">指数口径不可用，当前为成分加权</span>
-                    )}
+                    {/* 规则 3+4：口径降级。文案差别是「下一步该做什么」，见 weightChip.ts */}
+                    <WeightChip fund={f} />
                     {!uncovered(f) && f.missing.length > 0 && (
                       <span className="chip">缺 {f.missing.length} 只行情</span>
                     )}
@@ -637,4 +633,11 @@ export default function App() {
       )}
     </>
   )
+}
+
+/** 口径降级提醒：判断逻辑与文案都在 weightChip.ts，这里只负责渲染 */
+function WeightChip({ fund }: { fund: WeightChipInput }) {
+  const chip = weightChip(fund)
+  if (!chip) return null
+  return <span className={`chip ${chip.tone}`}>{chip.text}</span>
 }

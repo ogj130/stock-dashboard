@@ -497,3 +497,40 @@ describe('GET /api/estimate · 指数口径可用性（indexPctAvailable）', ()
     expect(messages).toContain('marketIndices has no NDX100; index funds lose their official pct')
   })
 })
+
+describe('降级原因要能分辨', () => {
+  // 两种降级退回的是同一套前十大权重，但下一步动作完全不同：
+  // 「指数成分取数失败」等重试会自己好，「没配跟踪指数」不改配置永远不会好。
+  // 后端只给一个 weightsFrom='top10'，界面就只能猜，于是把前者也说成后者。
+  it('配了指数却拉不到成分 → 标记取数失败', async () => {
+    const { app } = makeApp(
+      [{ code: '888002', name: '拉取失败的纳指', indexKey: 'ndx' }],
+      {
+        loadHoldings: async () => ({
+          holdings: [{ symbol: 'AAPL', name: '苹果', weight: 0.5, market: 105 }],
+          weightsFrom: 'top10',
+          indexWeightsUnavailable: true,
+        }),
+      },
+    )
+    const { body } = await get(app)
+    const f = body.funds[0]
+    expect(f.weightsFrom).toBe('top10')
+    expect(f.indexWeightsUnavailable).toBe(true)
+  })
+
+  it('压根没配跟踪指数 → 不标取数失败（那是配置问题，不是故障）', async () => {
+    const { app } = makeApp(
+      [{ code: '888003', name: '主动基金', indexKey: null }],
+      {
+        loadHoldings: async () => ({
+          holdings: [{ symbol: 'AAPL', name: '苹果', weight: 0.5, market: 105 }],
+          weightsFrom: 'top10',
+        }),
+      },
+    )
+    const { body } = await get(app)
+    expect(body.funds[0].weightsFrom).toBe('top10')
+    expect(body.funds[0].indexWeightsUnavailable).toBe(false)
+  })
+})

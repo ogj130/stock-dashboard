@@ -99,3 +99,28 @@ describe('buildEstimate', () => {
     expect(noHk.excluded).toEqual({ hk: 0 })
   })
 })
+
+describe('indexWeightsUnavailable', () => {
+  // 语义边界：只有「真的退回前十大」才算取数失败。
+  // 若指数成分拿到了（weightsFrom='index'），那么这个标记毫无意义，
+  // 前端却会照着它去显示故障文案 —— 必须在这里挡住。
+  const base = {
+    code: '270042', name: '广发纳指', shares: 1000, costBasis: 5000,
+    nav: 7.37, holdings, quotes, fxNow: 7, fxPrev: 7,
+    exposure: 1, lagDays: 1, phase: 'live' as const,
+  }
+
+  it('配了指数、退回前十大 → true', () => {
+    const r = buildEstimate({ ...base, weightsFrom: 'top10', indexWeightsUnavailable: true })
+    expect(r.indexWeightsUnavailable).toBe(true)
+  })
+
+  it('指数成分拿到了 → false（标记不该跟着权重来源一起漂）', () => {
+    const r = buildEstimate({ ...base, weightsFrom: 'index', indexWeightsUnavailable: true })
+    expect(r.indexWeightsUnavailable).toBe(false)
+  })
+
+  it('什么都没说 → false，不让旧调用方被迫改签名', () => {
+    expect(buildEstimate(base).indexWeightsUnavailable).toBe(false)
+  })
+})

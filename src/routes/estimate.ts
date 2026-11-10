@@ -35,7 +35,7 @@ export interface EstimateCtx {
 /** 依赖注入点：默认走真实网络，将来要离线测路由时传桩即可 */
 export interface EstimateDeps {
   resolveFx?: () => Promise<FxRate | null>
-  loadHoldings?: (fund: FundRow) => Promise<{ holdings: Holding[]; weightsFrom: FundEstimate['weightsFrom'] }>
+  loadHoldings?: (fund: FundRow) => Promise<HoldingsLoad>
   latestNav?: (code: string) => Promise<number>
   /** 底部指数条。默认 30 秒缓存 + 东财；测试按需注入，保持完全离线 */
   marketIndices?: () => Promise<MarketIndex[]>
@@ -58,10 +58,20 @@ export function boardOf(indexKey: string | null): string | null {
   return BOARD_BY_INDEX_KEY[indexKey] ?? null
 }
 
+/** 持仓加载结果：前十大或指数全量，外加「为什么降级」 */
+interface HoldingsLoad {
+  holdings: Holding[]
+  weightsFrom: FundEstimate['weightsFrom']
+  /** 配了跟踪指数却拿不到成分（取数失败），不是「压根没配」 */
+  indexWeightsUnavailable?: boolean
+}
+
 interface FundHoldingSet {
   fund: FundRow
   holdings: Holding[]
   weightsFrom: FundEstimate['weightsFrom']
+  /** 配了跟踪指数却拿不到成分，退回前十大（取数失败，不是没配置） */
+  indexWeightsUnavailable: boolean
   /** 被排除的港股数量（取价前就已滤掉） */
   excludedHk: number
 }
@@ -118,10 +128,24 @@ export function registerEstimateRoutes(
       resolveFx(),
       Promise.all(
         funds.map(async (fund): Promise<FundHoldingSet> => {
-          const { holdings, weightsFrom } = await loadHoldings(fund)
+          const { holdings, weightsFrom, indexWeightsUnavailable } = await loadHoldings(fund)
+          // 指数成分拉取失败留一条痕：这个降级不改变请求结果，只在日志和界面提示里可见
+          if (indexWeightsUnavailable) {
+            warnThrottled(
+              `index-weights:${fund.code}`,
+              { code: fund.code, indexKey: fund.index_key },
+              'index weights unavailable; falling back to top-10',
+            )
+          }
           // 港股在取价之前剔除：既省掉无意义的请求，也不让港币混进美元折算
           const usOnly = holdings.filter((h) => h.market !== HK_MARKET)
-          return { fund, holdings: usOnly, weightsFrom, excludedHk: holdings.length - usOnly.length }
+          return {
+            fund,
+            holdings: usOnly,
+            weightsFrom,
+            indexWeightsUnavailable: indexWeightsUnavailable === true,
+            excludedHk: holdings.length - usOnly.length,
+          }
         }),
       ),
     ])
@@ -169,6 +193,7 @@ export function registerEstimateRoutes(
         phase,
         excludedHk: r.excludedHk,
         weightsFrom: r.weightsFrom,
+        indexWeightsUnavailable: r.indexWeightsUnavailable,
         indexPct,
         board: boardOf(r.fund.index_key),
         afterHours,
@@ -232,9 +257,7 @@ async function getMarketIndicesSafely(
  * 但 navPct 只有 +1.07%，而同一天 QQQ 实际 +3.20%。低覆盖率会把估值系统性压向 0，
  * 且无法靠拟合 exposure 补救（需要 exposure≈2.34，但语义上只能在 0~1.5）。
  */
-async function defaultLoadHoldings(
-  fund: FundRow,
-): Promise<{ holdings: Holding[]; weightsFrom: FundEstimate['weightsFrom'] }> {
+async function defaultLoadHoldings(fund: FundRow): Promise<HoldingsLoad> {
   // 成分权重与披露持仓都是日级别的数据（纳指每季度才调仓），
   // 5 秒轮询没必要每轮重拉一次 21KB 的 101 行报文
   const cached = holdingsMemo.get(fund.code)
@@ -253,24 +276,29 @@ async function defaultLoadHoldings(
 const holdingsMemo = new Map<
   string,
   {
-    value: { holdings: Holding[]; weightsFrom: FundEstimate['weightsFrom'] }
+    value: HoldingsLoad
     atMs: number
     ttlMs: number
   }
 >()
 
-async function loadHoldingsUncached(
-  fund: FundRow,
-): Promise<{ holdings: Holding[]; weightsFrom: FundEstimate['weightsFrom'] }> {
+async function loadHoldingsUncached(fund: FundRow): Promise<HoldingsLoad> {
   if (fund.index_key) {
-    // 未知指数键会抛错：静默空数组会让调用方以为「该指数没有成分」，
-    // 于是悄悄退回前十大而不知道自己降级了
+    // catch 成 [] 是故意的：成分拿不到不该让整只基金 500（还有前十大可用），
+    // 但**降级必须留痕**——这个 catch 一旦彻底安静，估值口径就悄悄变了。
     const holdings = await fetchIndexWeights(fund.index_key).catch(() => [] as Holding[])
     if (holdings.length > 0) return { holdings, weightsFrom: 'index' }
+    // 配了指数却拿不到成分 —— 这是**取数失败**，不是「没配置」。
+    // 两者退回的是同一套前十大权重，但原因不同、该做的动作也不同：
+    // 一个是去填配置，一个是等会儿重试。不多带这个标记，界面就只能瞎猜。
   }
   const resolved = await resolveHoldingsFrom(fund.code, fetchPosition).catch(() => null)
   const holdings = resolved?.holdings ?? []
-  return { holdings, weightsFrom: holdings.length > 0 ? 'top10' : 'none' }
+  return {
+    holdings,
+    weightsFrom: holdings.length > 0 ? 'top10' : 'none',
+    indexWeightsUnavailable: Boolean(fund.index_key) && holdings.length > 0,
+  }
 }
 
 /**

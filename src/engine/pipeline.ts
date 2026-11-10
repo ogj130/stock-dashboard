@@ -22,6 +22,8 @@ export interface BuildInput {
   excludedHk?: number
   /** 权重来源：指数全量成分（≈100% 覆盖）/ 基金披露的前十大（40~70%）/ 无持仓 */
   weightsFrom?: 'index' | 'top10' | 'none'
+  /** 配了跟踪指数却拉不到成分（取数失败），不是「没配置」 */
+  indexWeightsUnavailable?: boolean
   /** 关联板块（跟踪指数的中文名，如「纳斯达克100」）；null 表示没配 index_key */
   board?: string | null
   /**
@@ -57,6 +59,8 @@ export interface FundEstimate {
    * 「指数口径不可用，当前为成分加权」，而不是让人以为看到的是指数口径。
    */
   indexPctAvailable: boolean
+  /** 配了跟踪指数却拉不到成分权重，退回前十大。与「压根没配指数」是两回事 */
+  indexWeightsUnavailable: boolean
   /** 关联板块：跟踪指数的中文名，界面用它分 tab、也对它去匹配指数涨跌幅 */
   board: string | null
   /** 让界面能说"含港股 N 只，已排除" */
@@ -139,6 +143,9 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     holdingsCount: available.length,
     lagDays: input.lagDays,
     weightsFrom: input.weightsFrom ?? (holdings.length > 0 ? 'top10' : 'none'),
+    // 只有「配了指数 + 退回前十大 + 确实有持仓」才算取数失败
+    indexWeightsUnavailable:
+      input.indexWeightsUnavailable === true && (input.weightsFrom ?? '') === 'top10',
     // 唯一真源就是 indexPct 本身：拿到且是有限数才算「指数口径生效」，
     // 不另设一个可以被忘掉同步的入参（那正是这次静默降级的成因）
     indexPctAvailable: input.indexPct !== undefined && Number.isFinite(input.indexPct),
