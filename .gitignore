@@ -6,3 +6,7 @@ dist
 
 # macOS 卡片的编译产物（源码在 tools/mac-card/）
 tools/mac-card/dist/
+
+# 图标中间产物（.icns 已提交，其余可用 make-icon.sh 重新生成）
+tools/mac-card/icon-1024.png
+tools/mac-card/icon.iconset/

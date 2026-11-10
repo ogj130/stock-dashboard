@@ -1,0 +1,102 @@
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 背景：从近黑的深蓝到稍亮的靛蓝，模拟深海向下加深 -->
+    <linearGradient id="bg" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#101a33"/>
+      <stop offset="0.55" stop-color="#0c1428"/>
+      <stop offset="1" stop-color="#070d1c"/>
+    </linearGradient>
+
+    <!-- 左上角的冷光，制造“水下透光”的感觉 -->
+    <radialGradient id="glowTop" cx="0.28" cy="0.12" r="0.62">
+      <stop offset="0" stop-color="#3d6bff" stop-opacity="0.42"/>
+      <stop offset="0.6" stop-color="#2650d0" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 曲线本身：从左下的正红渐变到右上的暖橙，和界面的涨色呼应 -->
+    <linearGradient id="line" x1="0.1" y1="0.85" x2="0.92" y2="0.15">
+      <stop offset="0" stop-color="#ff4d4f"/>
+      <stop offset="0.55" stop-color="#ff6b5a"/>
+      <stop offset="1" stop-color="#ffb26b"/>
+    </linearGradient>
+
+    <!-- 曲线下方面积：上浓下透，落在背景里 -->
+    <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff4d4f" stop-opacity="0.46"/>
+      <stop offset="0.55" stop-color="#ff4d4f" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#ff4d4f" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 曲线的外发光 -->
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- 末端光点的强发光 -->
+    <filter id="dot" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="22" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- 玻璃高光：顶部一道很淡的白 -->
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <clipPath id="card">
+      <rect x="64" y="64" width="896" height="896" rx="205"/>
+    </clipPath>
+  </defs>
+
+  <!-- ===== 卡片底 ===== -->
+  <g clip-path="url(#card)">
+    <rect x="64" y="64" width="896" height="896" fill="url(#bg)"/>
+    <rect x="64" y="64" width="896" height="896" fill="url(#glowTop)"/>
+
+    <!-- 底部两道很淡的波浪，暗示水 / 海面以下 -->
+    <path d="M64 812 C 200 772, 320 852, 456 812 S 720 772, 960 812 L960 960 L64 960 Z"
+          fill="#12203c" opacity="0.85"/>
+    <path d="M64 862 C 220 826, 340 898, 500 862 S 760 826, 960 862 L960 960 L64 960 Z"
+          fill="#0a1226" opacity="0.9"/>
+
+    <!-- ===== 曲线下方的面积 ===== -->
+    <path d="M176 700 L292 622 L392 664 L508 486 L620 536 L742 366 L848 268
+             L848 812 L176 812 Z"
+          fill="url(#area)"/>
+
+    <!-- ===== 上升曲线 ===== -->
+    <path d="M176 700 L292 622 L392 664 L508 486 L620 536 L742 366 L848 268"
+          fill="none" stroke="url(#line)" stroke-width="40"
+          stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)"/>
+
+    <!-- 末端光点 -->
+    <circle cx="848" cy="268" r="30" fill="#fff3ec" filter="url(#dot)"/>
+    <circle cx="848" cy="268" r="30" fill="#ffffff" opacity="0.92"/>
+
+    <!-- ===== 上浮的气泡（深海感，也给左上角留白一点内容） ===== -->
+    <g fill="#cfe0ff" opacity="0.5">
+      <circle cx="238" cy="300" r="17"/>
+      <circle cx="292" cy="238" r="10" opacity="0.7"/>
+      <circle cx="200" cy="392" r="8" opacity="0.55"/>
+      <circle cx="330" cy="316" r="6" opacity="0.45"/>
+    </g>
+
+    <!-- 顶部玻璃高光 -->
+    <rect x="64" y="64" width="896" height="420" fill="url(#sheen)"/>
+
+    <!-- 内描边：玻璃边缘那一道 1px 亮线 -->
+    <rect x="64.5" y="64.5" width="895" height="895" rx="205"
+          fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1.5"/>
+  </g>
+</svg>

@@ -21,6 +21,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>StockCard</string>
   <key>CFBundleDisplayName</key><string>基金估值卡片</string>
   <key>CFBundleIdentifier</key><string>local.stockmy.card</string>
+  <key>CFBundleIconFile</key><string>StockCard</string>
   <key>CFBundleVersion</key><string>1.0</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -36,6 +37,13 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+if [[ -f StockCard.icns ]]; then
+  cp StockCard.icns "$BUNDLE/Contents/Resources/StockCard.icns"
+  echo "已打入图标 StockCard.icns"
+else
+  echo "（未找到 StockCard.icns，先跑 ./make-icon.sh 生成）"
+fi
 
 echo "编译 card.swift ..."
 # -swift-version 5：避开 Swift 6 的严格并发检查（AppKit 回调都在主线程，没必要为它改造）
