@@ -47,6 +47,15 @@ export interface BuildInput {
    * 与常规时段「有官方指数涨跌幅就用官方」是同一条原则。
    */
   preMarketIndexPct?: number
+  /**
+   * 官方净值日 + 自那以后每一场的估算涨跌（滞后链）。
+   *
+   * QDII 净值 T+1/T+2 才公布，所以 `nav` 常常是两三个交易日前的数。
+   * `navPct` 只描述"今天这一场"，若直接乘在旧净值上，中间那几场就凭空丢了——
+   * 实测 2026-11-11 官方净值还停在 11-06，漏掉的是 11-09 那场的 +3.18%（约 1 万）。
+   * 这里把中间各场按时间顺序复合，当前市值才是"现在值多少钱"。
+   */
+  navChain?: { navDate: string | null; sessions: Array<{ date: string; pct: number }> }
 }
 
 /** 一组延伸时段行情里最新的成交时刻（没有就是 0，界面对 0 不渲染时间） */
@@ -87,6 +96,16 @@ export interface FundEstimate {
   indexWeightsUnavailable: boolean
   /** 关联板块：跟踪指数的中文名，界面用它分 tab、也对它去匹配指数涨跌幅 */
   board: string | null
+  /** 官方净值日（口径锚点）；null = 还没取到过净值 */
+  navDate: string | null
+  /**
+   * 官方净值日之后、今天之前已经走完的那几场的复合涨跌（百分数）。
+   * 当前市值 = 净值基准 ×(1+priorPct) ×(1+navPct)——只看 navPct 会漏掉这一段，
+   * QDII 净值 T+1/T+2 滞后时那是**上万元**的差。
+   */
+  priorPct: number
+  /** 漏掉的场次数；0 = 净值是最新的 */
+  sessionsSinceNav: number
   /** 让界面能说"含港股 N 只，已排除" */
   excluded: { hk: number }
   missing: string[]
@@ -162,7 +181,13 @@ export function buildEstimate(input: BuildInput): FundEstimate {
   })
 
   const base = input.shares * input.nav
-  const marketValue = base * (1 + result.navPct / 100)
+  // 滞后链：先把净值日之后已经走完的那几场复合出来，再叠今天这一场。
+  // 复合而不是相加——两场各 +3% 不是 +6%，是 +6.09%。
+  const priorSessions = input.navChain?.sessions ?? []
+  const priorFactor = priorSessions.reduce((acc, s) => acc * (1 + s.pct / 100), 1)
+  const priorPct = (priorFactor - 1) * 100
+  const priorValue = base * priorFactor
+  const marketValue = priorValue * (1 + result.navPct / 100)
 
   // 夜盘那条腿：只有调用方给了盘后行情才算。算不出来（覆盖率 < 0.3、一只都没有）
   // 就整块省掉——用 `...{}` 而不是把 afterHours 设成 undefined，JSON 里连键都不出现。
@@ -223,7 +248,9 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     shares: input.shares,
     costBasis: input.costBasis,
     marketValue,
-    amount: base * (result.navPct / 100),
+    // 今日收益按"今天开场时的估值市值"算，而不是官方净值基准——
+    // 否则滞后那几场赚的钱会被算进今天，今日估算虚高
+    amount: priorValue * (result.navPct / 100),
     holdingProfit: marketValue - input.costBasis,
     coveredWeight: result.coveredWeight,
     holdingsCount: available.length,
@@ -236,6 +263,9 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     // 不另设一个可以被忘掉同步的入参（那正是这次静默降级的成因）
     indexPctAvailable: input.indexPct !== undefined && Number.isFinite(input.indexPct),
     board: input.board ?? null,
+    navDate: input.navChain?.navDate ?? null,
+    priorPct,
+    sessionsSinceNav: priorSessions.length,
     excluded: { hk: input.excludedHk ?? 0 },
     missing,
     breakdown: result.breakdown,
@@ -243,7 +273,7 @@ export function buildEstimate(input: BuildInput): FundEstimate {
       ? {
           preMarket: {
             ...preMarket,
-            amount: base * (preMarket.navPct / 100),
+            amount: priorValue * (preMarket.navPct / 100),
           },
         }
       : {}),
@@ -252,7 +282,7 @@ export function buildEstimate(input: BuildInput): FundEstimate {
           afterHours: {
             navPct: afterHours.navPct,
             // 与 navPct 同口径：市值 = 份额 × 净值，再乘这条腿的涨跌幅
-            amount: base * (afterHours.navPct / 100),
+            amount: priorValue * (afterHours.navPct / 100),
             coveredWeight: afterHours.coveredWeight,
             asOfMs: afterHours.asOfMs,
           },

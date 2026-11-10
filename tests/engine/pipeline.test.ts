@@ -218,3 +218,67 @@ describe('盘前口径：指数代理优先', () => {
     expect(r.preMarket!.basis).toBe('constituents')
   })
 })
+
+describe('净值滞后链', () => {
+  // QDII 官方净值 T+1/T+2 才公布：净值停在 11-06 时，11-09 那场已经发生但没进净值。
+  // 不把这段复合进来，总资产就会凭空少算——实测差过一万块。
+  const base = {
+    code: '270042', name: '广发纳指', shares: 1000, costBasis: 5000,
+    nav: 7.37, holdings, quotes, fxNow: 7, fxPrev: 7,
+    exposure: 1, lagDays: 1, phase: 'live' as const, weightsFrom: 'index' as const,
+  }
+
+  it('净值日之后那几场要复合进市值，且是复合不是相加', () => {
+    const r = buildEstimate({
+      ...base,
+      navChain: {
+        navDate: '2026-11-06',
+        sessions: [
+          { date: '2026-11-09', pct: 3 },
+          { date: '2026-11-10', pct: 2 },
+        ],
+      },
+    })
+    // 1.03 × 1.02 = 1.0506 → +5.06%（相加会得到 +5%）
+    expect(r.priorPct).toBeCloseTo(5.06, 6)
+    expect(r.sessionsSinceNav).toBe(2)
+    expect(r.navDate).toBe('2026-11-06')
+    // 今天这一场 +6%（holdings 权重算出来的），市值 = 基准 × 1.0506 × 1.06
+    const baseValue = 1000 * 7.37
+    expect(r.marketValue).toBeCloseTo(baseValue * 1.0506 * 1.06, 4)
+  })
+
+  it('今日收益按"今天开场时的估值市值"算，不把滞后那几场算成今天赚的', () => {
+    const r = buildEstimate({
+      ...base,
+      navChain: { navDate: '2026-11-06', sessions: [{ date: '2026-11-09', pct: 10 }] },
+    })
+    const baseValue = 1000 * 7.37
+    // 今日 +6% 作用在 1.1 倍之后的市值上；若错用净值基准，会是 baseValue*0.06
+    expect(r.amount).toBeCloseTo(baseValue * 1.1 * 0.06, 4)
+    expect(r.amount).not.toBeCloseTo(baseValue * 0.06, 2)
+  })
+
+  it('没有滞后（净值最新）时行为与原来一致', () => {
+    const withChain = buildEstimate({
+      ...base,
+      navChain: { navDate: '2026-11-10', sessions: [] },
+    })
+    const without = buildEstimate(base)
+    expect(withChain.priorPct).toBe(0)
+    expect(withChain.sessionsSinceNav).toBe(0)
+    expect(withChain.marketValue).toBeCloseTo(without.marketValue, 6)
+    expect(withChain.amount).toBeCloseTo(without.amount, 6)
+  })
+
+  it('持有收益跟着滞后链一起修正（否则账面上永远少那一段）', () => {
+    const plain = buildEstimate(base)
+    const chained = buildEstimate({
+      ...base,
+      navChain: { navDate: '2026-11-06', sessions: [{ date: '2026-11-09', pct: 3 }] },
+    })
+    // 3% 的滞后段作用在净值基准上，且要再乘今天这一场（+6%）：
+    // 1000×7.37×0.03×1.06 —— 这正是"复合"与"相加"的区别
+    expect(chained.holdingProfit - plain.holdingProfit).toBeCloseTo(1000 * 7.37 * 0.03 * 1.06, 4)
+  })
+})

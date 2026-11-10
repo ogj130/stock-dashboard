@@ -55,6 +55,12 @@ interface FundEstimate {
   breakdown: Breakdown[]
   /** 关联板块（跟踪指数的中文名）；null 表示没配 index_key */
   board: string | null
+  /** 官方净值日（口径锚点） */
+  navDate: string | null
+  /** 净值日之后已走完那几场的复合涨跌（%）；当前市值含这一段 */
+  priorPct: number
+  /** 滞后场次数；>0 说明官方净值还没跟上 */
+  sessionsSinceNav: number
   /** 夜盘读数。没有盘后行情 / 覆盖率 < 30% / 非收盘相时后端根本不发这个键 */
   afterHours?: AfterHoursLite
   /**
@@ -66,6 +72,23 @@ interface FundEstimate {
     basis: 'index' | 'constituents'
     constituentPct?: number
   }
+}
+
+/** 对账结果（/api/accuracy）：判断"我们准不准"的唯一硬指标 */
+interface AccuracyRow {
+  code: string
+  n: number
+  mae: number
+  bias: number
+  suggestedExposure: number
+}
+
+interface AccuracyResponse {
+  slot: number
+  mae: number
+  samples: number
+  enough: boolean
+  funds: AccuracyRow[]
 }
 
 interface FxLeg {
@@ -222,6 +245,7 @@ export default function App() {
    * 连 startMs/endMs 一起存，横轴与副标题才有真实窗口可标注。
    */
   const [history, setHistory] = useState<HistoryResponse | null>(null)
+  const [accuracy, setAccuracy] = useState<AccuracyResponse | null>(null)
   /** 用户选中的档位。默认「今日」= 当天美股开盘到收盘 */
   const [chartRange, setChartRange] = useState<RangeKey>(readStoredRange)
 
@@ -237,13 +261,15 @@ export default function App() {
   const load = useCallback(async () => {
     if (typeof document !== 'undefined' && document.hidden) return
     try {
-      const [estimate, fundsRes, hist] = await Promise.all([
+      const [estimate, fundsRes, hist, acc] = await Promise.all([
         getJson<EstimateResponse>('/api/estimate'),
         getJson<{ funds: FundRowLite[] }>('/api/funds'),
         // 曲线失败不许拖垮估值：取不到就沿用上一轮的点，页面照常跳数字
         getJson<HistoryResponse>(
           `/api/portfolio/history?range=${chartRange}&phase=${historySession}`,
         ).catch(() => null),
+        // 对账失败不拖垮估值：没有它只是少了"准确度"那几行
+        getJson<AccuracyResponse>('/api/accuracy').catch(() => null),
       ])
       if (!aliveRef.current) return
       const map: Record<string, number> = {}
@@ -251,6 +277,7 @@ export default function App() {
       setData(estimate)
       setIdsByCode(map)
       if (hist) setHistory(hist)
+      if (acc) setAccuracy(acc)
       setError(null)
       setUpdatedAt(Date.now())
     } catch (err) {
@@ -606,6 +633,14 @@ export default function App() {
                     {f.excluded.hk > 0 && (
                       <span className="chip warn">含港股 {f.excluded.hk} 只，已排除</span>
                     )}
+                    {/* 净值滞后：QDII 的净值 T+1/T+2 才公布，市值里已经补上中间那几场，
+                        但必须说清锚点是哪天的净值，否则「当日 -1%」和「总资产涨了」看着像矛盾 */}
+                    {f.sessionsSinceNav > 0 && (
+                      <span className="chip" title={`官方净值 ${f.navDate}，之后已按估算补 ${f.sessionsSinceNav} 场（累计 ${f.priorPct >= 0 ? '+' : ''}${f.priorPct.toFixed(2)}%）`}>
+                        净值 {f.navDate?.slice(5)} · 补 {f.sessionsSinceNav} 场 {f.priorPct >= 0 ? '+' : ''}
+                        {f.priorPct.toFixed(2)}%
+                      </span>
+                    )}
                     {/* 盘前：说清这条数字用的是哪套口径，以及为什么某只没跟着变 */}
                     {phase === 'pre' && showPre && (
                       f.preMarket ? (
@@ -623,9 +658,10 @@ export default function App() {
                     {!uncovered(f) && f.missing.length > 0 && (
                       <span className="chip">缺 {f.missing.length} 只行情</span>
                     )}
-                    {f.lagDays !== 0 && f.lagDays !== 1 && (
-                      <span className="chip">净值滞后 {f.lagDays} 日</span>
-                    )}
+                    {/* 原先这里按**配置**的 lag_days 显示"净值滞后 N 日"：
+                        那是我们以为的滞后，不是实际的。真实滞后由 navDate +
+                        sessionsSinceNav 表达（上面那个 chip 与明细里的"净值日"），
+                        两个口径同时摆着只会互相打脸，所以删掉配置版 */}
                   </span>
                 </button>
 
@@ -659,7 +695,21 @@ export default function App() {
                           <span>份额 <span className="num">{f.shares.toFixed(2)}</span></span>
                           <span>持仓 {f.holdingsCount} 只</span>
                           <span>覆盖 <span className="num">{Math.round(f.coveredWeight * 100)}%</span></span>
-                          <span>滞后 {f.lagDays} 日</span>
+                          <span>
+                            净值日 {f.navDate ?? '—'}
+                            {f.sessionsSinceNav > 0 && `（补 ${f.sessionsSinceNav} 场）`}
+                          </span>
+                          {/* 对账：只有官方净值公布过、且留痕能对齐的那几天才算样本。
+                              0 天时不说 0.00pp，那是"还没开始对账"，不是"误差为零" */}
+                          {(() => {
+                            const a = accuracy?.funds.find((x) => x.code === f.code)
+                            if (!a || a.n === 0) return <span className="muted">对账样本 0 天</span>
+                            return (
+                              <span title={`偏差 ${a.bias >= 0 ? '+' : ''}${a.bias.toFixed(2)}pp；建议仓位 ${a.suggestedExposure.toFixed(2)}`}>
+                                对账 {a.n} 天 · MAE {a.mae.toFixed(2)}pp
+                              </span>
+                            )
+                          })()}
                           <button type="button" className="remove" onClick={() => void removeFund(f)}>
                             移除
                           </button>

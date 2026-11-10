@@ -10,8 +10,15 @@ import { fetchUsdCny, fetchUsdCnyFallback, loadCachedFx, saveFx, type FxRate } f
 import { createMarketIndicesCache, type MarketIndex } from '../sources/marketIndices'
 import { fetchAfterHours } from '../sources/afterHours'
 import { fetchPreMarket } from '../sources/preMarket'
+import { dateToMs } from '../engine/reconcile'
 import { PRE_MARKET_PROXY_BY_INDEX } from '../sources/marketIndices'
-import { listFunds, upsertNav, type FundRow } from '../store/queries'
+import {
+  latestNavDate,
+  listFunds,
+  sessionsSinceNav,
+  upsertNav,
+  type FundRow,
+} from '../store/queries'
 import { recordSnapshot } from '../store/portfolio'
 import { CONFIG } from '../config'
 
@@ -39,6 +46,14 @@ export interface EstimateDeps {
   resolveFx?: () => Promise<FxRate | null>
   loadHoldings?: (fund: FundRow) => Promise<HoldingsLoad>
   latestNav?: (code: string) => Promise<number>
+  /**
+   * 滞后链：官方净值日 + 自那以后每一场的估算涨跌。
+   * 默认从库里的 nav_history / estimate_log 现算（两个索引查询，很便宜）。
+   */
+  navChain?: (
+    fund: FundRow,
+    beforeDate: string,
+  ) => { navDate: string | null; sessions: Array<{ date: string; pct: number }> }
   /** 底部指数条。默认 30 秒缓存 + 东财；测试按需注入，保持完全离线 */
   marketIndices?: () => Promise<MarketIndex[]>
   /** 盘前行情。默认 CNBC（权威，带 PRE_MKT 类型）→ 新浪兜底；只在 phase === 'pre' 时才被调用 */
@@ -98,6 +113,12 @@ export function registerEstimateRoutes(
 ): void {
   const loadHoldings = deps.loadHoldings ?? defaultLoadHoldings
   const latestNav = deps.latestNav ?? ((code: string) => resolveNav(ctx.db, code))
+  const readNavChain =
+    deps.navChain ??
+    ((fund, beforeDate) => {
+      const navDate = latestNavDate(ctx.db, fund.code)
+      return { navDate, sessions: sessionsSinceNav(ctx.db, fund.code, navDate, beforeDate) }
+    })
   const resolveFx = deps.resolveFx ?? (() => resolveFxRate(ctx.db))
   const fetchIndices = deps.marketIndices ?? createMarketIndicesCache()
   const readAfterHours = deps.afterHours ?? fetchAfterHours
@@ -207,6 +228,7 @@ export function registerEstimateRoutes(
         afterHours,
         preMarket,
         preMarketIndexPct: preMarketPctFor(r.fund.index_key, preMarket),
+        navChain: readNavChain(r.fund, targetNavDate),
       })
     })
 
@@ -622,28 +644,51 @@ const navMemo = new Map<string, { nav: number; atMs: number }>()
  */
 async function resolveNav(db: Db, code: string): Promise<number> {
   const stored = latestNavOf(db, code)
-  if (stored > 0) return stored
+  const storedDate = latestNavDate(db, code)
+  const today = etDate()
+  /**
+   * 关键：库里的净值**会过期**。
+   *
+   * 早先的写法是「库里有值就直接返回」，于是第一个净值一旦落库就再也不刷新：
+   * 11-06 的净值被用了整整五天，界面上的总资产一直挂在那个锚点上，
+   * 中间两场涨跌全靠滞后链去补。QDII 每个交易日都会披露前一日的净值，
+   * 只要最新净值日不是今天（或昨天），就值得再问一次。
+   */
+  const stale = storedDate === null || (dateToMs(today) - dateToMs(storedDate)) / 86_400_000 >= 1
+  if (stored > 0 && !stale) return stored
 
   const memo = navMemo.get(code)
   if (memo && Date.now() - memo.atMs < CONFIG.navPollMs) return memo.nav
 
+  // pageSize 拉 20 天而不是 1 天：多出来的历史是**对账的原料**，
+  // 没有它校准就只能等，永远攒不够样本判 lag 与仓位
   const url =
-    `https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?pageIndex=1&pageSize=1` +
+    `https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?pageIndex=1&pageSize=20` +
     `&plat=Android&appType=ttjj&product=EFund&Version=1&deviceid=1&Fcodes=${code}`
   try {
     const res = await fetch(url)
-    if (!res.ok) return 0
+    if (!res.ok) return stored
     const body = (await res.json()) as { Datas?: NavApiRow[] | null }
-    const row = body.Datas?.[0]
-    const nav = toNumber(row?.NAV)
-    if (!row || nav === null || nav <= 0) return 0
-    navMemo.set(code, { nav, atMs: Date.now() })
+    const rows = (body.Datas ?? []).filter((r) => {
+      const nav = toNumber(r.NAV)
+      const pct = toNumber(r.NAVCHGRT)
+      return Boolean(r.PDATE) && nav !== null && nav > 0 && pct !== null
+    })
+    if (rows.length === 0) return stored
 
-    const pct = toNumber(row.NAVCHGRT)
-    if (pct !== null && row.PDATE) upsertNav(db, code, row.PDATE, nav, pct)
+    // 全量落库（按 PDATE 覆盖）：官方偶尔重述净值，upsert 会跟上
+    for (const row of rows) {
+      upsertNav(db, code, row.PDATE!, toNumber(row.NAV)!, toNumber(row.NAVCHGRT)!)
+    }
+
+    // 取日期最大那一行当"当前净值"，不能假设接口第一行就是最新
+    const latest = rows.reduce((a, b) => (a.PDATE! >= b.PDATE! ? a : b))
+    const nav = toNumber(latest.NAV)!
+    navMemo.set(code, { nav, atMs: Date.now() })
     return nav
   } catch {
-    return 0
+    // 取数失败沿用库里的旧值：宁可滞后，也不能让市值变成 0
+    return stored
   }
 }
 
