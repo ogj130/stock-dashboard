@@ -378,6 +378,72 @@ body {
 }
 
 /* 末端圆点用 HTML 画：SVG 的 circle 会被 preserveAspectRatio="none" 拉成椭圆 */
+/* 局部极值标记。
+   峰/谷用小空心点 + 时间，转折点（pivot）只是个更淡的小点：
+   图上已经有左侧 max/min 数值、末端圆点、零基线，再多加东西会糊。
+   时间用半透明小字贴在点的外侧（峰在上、谷在下），避免压住曲线。 */
+.chart-ext {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: default;
+}
+
+.chart-ext i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: 0 0 0 1.5px currentColor;
+}
+
+.chart-ext b {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--muted);
+  text-shadow: 0 1px 2px var(--bg);
+}
+
+.chart-ext.peak b {
+  bottom: calc(100% + 3px);
+}
+
+.chart-ext.trough b {
+  top: calc(100% + 3px);
+}
+
+.chart-ext.peak i {
+  color: var(--up);
+}
+
+.chart-ext.trough i {
+  color: var(--down);
+}
+
+.chart-pivot {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  opacity: 0.5;
+}
+
+.chart-pivot.peak {
+  background: var(--up);
+}
+
+.chart-pivot.trough {
+  background: var(--down);
+}
+
 .chart-dot {
   position: absolute;
   width: 6px;

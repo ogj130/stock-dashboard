@@ -1,5 +1,6 @@
 import { useId, useState } from 'react'
 import { money, pctText, signedMoney, tone } from './format'
+import { findExtrema, windowExtremes } from './extrema'
 
 /**
  * 组合曲线。手写 SVG，不引图表库：项目没有图表依赖，也不该为此多背一个
@@ -193,6 +194,12 @@ export function windowSubtitle(range: RangeKey, startMs: number, endMs: number):
   return `本地 ${LOCAL_HHMM.format(new Date(startMs))} – ${LOCAL_HHMM.format(new Date(endMs))}`
 }
 
+/** 某个点的时间标签：session 档用美东（与横轴一致），其余用本地 */
+export function pointTimeLabel(range: RangeKey, tsMs: number): string {
+  const fmt = range === 'session' ? ET_HHMM : LOCAL_HHMM
+  return fmt.format(new Date(tsMs))
+}
+
 export interface ChartGeometry {
   /** 折线路径；0 个点时为空串 */
   line: string
@@ -207,6 +214,8 @@ export interface ChartGeometry {
   yMinPct: number
   lastXPct: number
   lastYPct: number
+  /** 每个点在 viewBox 里的坐标（百分比），供极值标记复用同一套比例尺 */
+  coords: Array<{ xPct: number; yPct: number }>
   /** 所有值相同（或只有一个点）：平线画在中线，且没有「涨跌」可言 */
   flat: boolean
   /**
@@ -227,6 +236,7 @@ const EMPTY: ChartGeometry = {
   yMinPct: 50,
   lastXPct: 100,
   lastYPct: 50,
+  coords: [],
   flat: true,
   zeroY: null,
 }
@@ -288,6 +298,7 @@ export function buildGeometry(
     // 单点画在右端（等价于「最新」），与那条平线的末尾重合
     lastXPct: points.length === 1 ? 100 : (lastCoord[0] / VIEW_W) * 100,
     lastYPct: (lastCoord[1] / VIEW_H) * 100,
+    coords: coords.map(([x, y]) => ({ xPct: (x / VIEW_W) * 100, yPct: (y / VIEW_H) * 100 })),
     flat,
     zeroY,
   }
@@ -382,6 +393,22 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
   // 盘前：总资产与当日收益都按「相对收盘」算，避免两处数字互相打架
   const delta =
     isPre && metric !== 'profit' ? preDeltaSummary(points, label) : deltaSummary(points, metric, label)
+
+  /**
+   * 局部极值：最高/最低那一刻（一定有），加上方向转折点（去噪后最多 6 个）。
+   * 值本身已经由左侧的 max/min 标签给出，标记上的可见文字只给**时间**——
+   * 用户真正缺的信息是「什么时候摸到最高」，而不是再抄一遍数字。
+   */
+  const values = points.map((p) => p[metric] as number)
+  const ext = windowExtremes(values)
+  const pivots = findExtrema(values, { limit: 6 }).filter(
+    (e) => e.index !== ext.peak?.index && e.index !== ext.trough?.index,
+  )
+  const markOf = (index: number | undefined): { xPct: number; yPct: number } | null => {
+    if (index === undefined) return null
+    return geo.coords[index] ?? null
+  }
+  const fmtValue = (v: number): string => (metric === 'value' ? money(v) : signedMoney(v))
   const trend = delta.tone
   const title = metricLabel(metric)
 
@@ -508,6 +535,41 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
                 )}
               </>
             )}
+            {/* 局部极值标记：最高/最低那一刻给时间，方向转折点只给一个小淡点。
+                都用百分比绝对定位，和末端圆点共用一套坐标，不另算比例尺 */}
+            {n >= 2 &&
+              (['peak', 'trough'] as const).map((kind) => {
+                const point = ext[kind]
+                const mark = markOf(point?.index)
+                if (!point || !mark) return null
+                const time = pointTimeLabel(shownRange, points[point.index]!.tsMs)
+                return (
+                  <span
+                    key={kind}
+                    className={`chart-ext ${kind}`}
+                    style={{ left: `${mark.xPct}%`, top: `${mark.yPct}%` }}
+                    title={`${kind === 'peak' ? '最高' : '最低'} ${fmtValue(point.value)} · ${time}`}
+                  >
+                    <i aria-hidden="true" />
+                    <b className="num">{time}</b>
+                  </span>
+                )
+              })}
+            {n >= 2 &&
+              pivots.map((e) => {
+                const mark = markOf(e.index)
+                if (!mark) return null
+                const time = pointTimeLabel(shownRange, points[e.index]!.tsMs)
+                return (
+                  <span
+                    key={`p${e.index}`}
+                    className={`chart-pivot ${e.kind}`}
+                    style={{ left: `${mark.xPct}%`, top: `${mark.yPct}%` }}
+                    title={`${e.kind === 'peak' ? '局部高' : '局部低'} ${fmtValue(e.value)} · ${time}`}
+                    aria-hidden="true"
+                  />
+                )
+              })}
             <span
               className="chart-dot"
               style={{ left: `${geo.lastXPct}%`, top: `${geo.lastYPct}%` }}
