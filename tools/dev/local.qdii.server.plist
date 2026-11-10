@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  QDII 估值服务的 launchd 守护。
+
+  为什么不是「手动 nohup」：19:57 那次进程无声无息地没了（日志最后一条是 200，
+  无异常、无崩溃报告），而菜单栏卡片只能显示一行「连不上本地服务」。
+  常驻服务必须由系统托管：登录即起、退出即拉、崩了有记录。
+
+  关键点：
+  · ProgramArguments 走 `bash -lc`：launchd 的 PATH 只有 /usr/bin:/bin，
+    直接写 pnpm 会找不到；登录 shell 才会带上 /opt/homebrew/bin。
+  · KeepAlive 用 SuccessfulExit=false？不：服务被我们的 kill 重启也属于「不正常退出」，
+    这里用无条件 KeepAlive，ThrottleInterval 兜住「起不来就疯狂重试」的雪崩。
+  · StandardErrorPath 同指一个文件：崩溃时 stderr 才是有用的那一半。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.qdii.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <!--
+      直接用 node 跑，不经 pnpm：`pnpm exec` 会再多一层包装进程，launchd 盯的是
+      包装进程的 pid，真正的监听者（node 子进程）死了它看不见 —— KeepAlive 就形同虚设。
+      `--import tsx` 是 tsx 官方支持的免 loader 用法，单进程，pid 与监听者一致。
+    -->
+    <string>exec node --import tsx src/server.ts --lan</string>
+  </array>
+
+  <!--
+    launchd 的默认 PATH 只有 /usr/bin:/bin，连 node 都找不到（实测第一次装完
+    exit code = 127，日志里是 "exec: pnpm: not found"）。而 `bash -l` 读的是
+    /etc/profile 与 ~/.bash_profile —— 这台机器的 homebrew 路径写在 ~/.zprofile 里，
+    登录 shell 是 zsh，所以 -l 也救不了。PATH 必须由 plist 显式给。
+  -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/ouguangji/2026/stock-my</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- 秒；防止启动即失败时被 launchd 反复拉起 -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/ouguangji/Library/Logs/qdii-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ouguangji/Library/Logs/qdii-server.log</string>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>
