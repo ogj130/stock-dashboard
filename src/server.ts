@@ -1,5 +1,6 @@
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
+import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { openDb } from './store/db'
 import { registerFundRoutes } from './routes/funds'
@@ -12,13 +13,20 @@ import { TencentSource } from './sources/tencent'
 import { CnbcSource } from './sources/cnbc'
 import { SinaSource } from './sources/sina'
 import { derivePhaseLocal } from './engine/phase'
+import { defaultDbPath } from './store/path'
+import { loadOrCreateToken, registerAccessGate, resolveHost } from './net/access'
+import { dirname } from 'node:path'
 
-const db = openDb(process.env.DB_PATH ?? 'data/app.db')
+const dbPath = defaultDbPath()
+const db = openDb(dbPath)
 const app = Fastify({ logger: true })
 
-// 前端构建产物；dist 不存在时 @fastify/static 只告警不注册路由，API 照常可用
+// 前端构建产物；dist 不存在时 @fastify/static 只告警不注册路由，API 照常可用。
+// DIST_DIR 是给打包版用的：单文件 bundle 之后 import.meta.url 不再指向 src/，
+// 相对路径会飘，必须能显式指定。
+const distRoot = process.env.DIST_DIR ?? fileURLToPath(new URL('../dist', import.meta.url))
 await app.register(fastifyStatic, {
-  root: fileURLToPath(new URL('../dist', import.meta.url)),
+  root: distRoot,
   wildcard: false,
 })
 
@@ -69,8 +77,28 @@ registerEstimateRoutes(app, {
 app.get('/api/health', async () => ({ ok: true }))
 
 const port = Number(process.env.PORT ?? 5178)
-await app.listen({ port, host: '0.0.0.0' })
-console.log(`listening on http://127.0.0.1:${port}`)
+// 局域网默认关：手机要看得显式开（--lan 或 LAN=1）。忘了关的代价是全屋都能看你的持仓
+const lan = process.argv.includes('--lan') || process.env.LAN === '1'
+const host = resolveHost(lan)
+let token = ''
+if (lan) {
+  token = loadOrCreateToken(dirname(dbPath))
+  registerAccessGate(app, token)
+}
+
+await app.listen({ port, host })
+console.log(`db       ${dbPath}`)
+console.log(`ui       http://127.0.0.1:${port}`)
+if (lan) {
+  const nets = Object.values(networkInterfaces())
+    .flat()
+    .filter((n) => n && n.family === 'IPv4' && !n.internal)
+    .map((n) => n!.address)
+  for (const ip of nets) console.log(`lan      http://${ip}:${port}/?token=${token}`)
+  console.log(`token    ${token}  （保存在 ${dirname(dbPath)}，手机首次访问带一次即可）`)
+} else {
+  console.log('lan      关闭（只监听本机）；手机访问请加 --lan')
+}
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {

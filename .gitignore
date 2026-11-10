@@ -10,3 +10,8 @@ tools/mac-card/dist/
 # 图标中间产物（.icns 已提交，其余可用 make-icon.sh 重新生成）
 tools/mac-card/icon-1024.png
 tools/mac-card/icon.iconset/
+
+# Windows 绿色版产物与 node 下载缓存（都能用 tools/win/build-win.sh 重建）
+dist-win/
+.cache/
+data/access-token.txt
