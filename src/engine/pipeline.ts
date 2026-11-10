@@ -1,4 +1,5 @@
-import type { Holding, Phase, Quote } from '../types'
+import type { AfterHoursQuote, Holding, Phase, Quote } from '../types'
+import { estimateAfterHours } from './afterHours'
 import { estimateNav } from './estimate'
 
 export interface BuildInput {
@@ -23,6 +24,11 @@ export interface BuildInput {
   weightsFrom?: 'index' | 'top10' | 'none'
   /** 关联板块（跟踪指数的中文名，如「纳斯达克100」）；null 表示没配 index_key */
   board?: string | null
+  /**
+   * 盘后行情。只有 `phase === 'settled'` 时调用方才会传（盘中谈「夜盘」没有意义），
+   * 覆盖率不够或一只都没有时，buildEstimate 自己把 afterHours 整块省掉。
+   */
+  afterHours?: Map<string, AfterHoursQuote>
 }
 
 export interface FundEstimate {
@@ -47,6 +53,22 @@ export interface FundEstimate {
   excluded: { hk: number }
   missing: string[]
   breakdown: Array<{ symbol: string; name: string; weight: number; pct: number; contribution: number }>
+  /**
+   * 夜盘（盘后）估值的第二组数字。**可选**：没有盘后行情、覆盖率不足 0.3、
+   * 或当前是盘中，这个键就根本不出现——界面据此决定要不要多渲染一行，
+   * 所以绝不能写 0 占位（那会画出「夜盘 +0.00%」这种假数据）。
+   *
+   * 与 navPct 的关系：navPct 仍是「截至常规收盘」的估算，这一块是补充读数，
+   * 两者互不覆盖。
+   */
+  afterHours?: {
+    navPct: number
+    amount: number
+    /** 有盘后行情的成分权重之和（0~1），界面可据此说明「覆盖 xx%」 */
+    coveredWeight: number
+    /** 盘后最新成交时刻 */
+    asOfMs: number
+  }
 }
 
 /**
@@ -79,6 +101,19 @@ export function buildEstimate(input: BuildInput): FundEstimate {
 
   const base = input.shares * input.nav
   const marketValue = base * (1 + result.navPct / 100)
+
+  // 夜盘那条腿：只有调用方给了盘后行情才算。算不出来（覆盖率 < 0.3、一只都没有）
+  // 就整块省掉——用 `...{}` 而不是把 afterHours 设成 undefined，JSON 里连键都不出现。
+  const afterHours = input.afterHours
+    ? estimateAfterHours({
+        holdings,
+        afterHours: input.afterHours,
+        fxNow: input.fxNow,
+        fxPrev: input.fxPrev,
+        exposure: input.exposure,
+      })
+    : null
+
   return {
     code: input.code,
     name: input.name,
@@ -98,5 +133,16 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     excluded: { hk: input.excludedHk ?? 0 },
     missing,
     breakdown: result.breakdown,
+    ...(afterHours
+      ? {
+          afterHours: {
+            navPct: afterHours.navPct,
+            // 与 navPct 同口径：市值 = 份额 × 净值，再乘这条腿的涨跌幅
+            amount: base * (afterHours.navPct / 100),
+            coveredWeight: afterHours.coveredWeight,
+            asOfMs: afterHours.asOfMs,
+          },
+        }
+      : {}),
   }
 }

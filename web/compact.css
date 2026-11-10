@@ -307,6 +307,14 @@ html.cc-mode body {
   font-size: 9px;
 }
 
+/* 夜盘那一小段：和相位、无覆盖同排，但用正文色——它是第三条读数，不是警告 */
+.cc-ah {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 9px;
+  opacity: 0.86;
+}
+
 .cc-clock {
   margin-left: auto;
   flex: 0 0 auto;

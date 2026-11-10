@@ -96,7 +96,9 @@ export default function CompactCard() {
   const ariaLabel =
     `总资产 ${view.totalText}，今日估算 ${view.deltaText}` +
     `${view.deltaPctText === null ? '' : ` ${view.deltaPctText}`}，` +
-    `持有收益 ${view.holdText}，${view.phaseText}`
+    `持有收益 ${view.holdText}，${view.phaseText}` +
+    // 夜盘是补充读数：读屏也要能听到，否则视觉用户看到的那一行对他们是缺失的
+    `${view.afterHoursText === null ? '' : `，${view.afterHoursText}`}`
 
   return (
     <div className="cc-card" role="group" aria-label={ariaLabel}>
@@ -182,6 +184,8 @@ export default function CompactCard() {
         {view.quotesAvailable && view.blindCount > 0 && (
           <span className="cc-blind">· {view.blindCount} 只无覆盖</span>
         )}
+        {/* 有夜盘才多这一段；没有就什么都不渲染（绝不写「夜盘 —」） */}
+        {view.afterHoursText !== null && <span className="cc-ah">· {view.afterHoursText}</span>}
         <span className="cc-clock num">{view.clockText}</span>
       </div>
     </div>

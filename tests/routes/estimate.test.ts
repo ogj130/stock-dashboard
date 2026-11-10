@@ -4,7 +4,7 @@ import { registerEstimateRoutes, boardOf, type EstimateDeps } from '../../src/ro
 import { openDb, type Db } from '../../src/store/db'
 import { insertFund } from '../../src/store/queries'
 import type { QuoteRegistry } from '../../src/sources/registry'
-import type { Holding, Quote } from '../../src/types'
+import type { AfterHoursQuote, Holding, MarketStatus, Quote } from '../../src/types'
 import type { MarketIndex } from '../../src/sources/marketIndices'
 
 const INDICES: MarketIndex[] = [
@@ -46,6 +46,8 @@ function makeApp(
   funds: Array<{ code: string; name: string; indexKey: string | null }>,
   overrides: Partial<EstimateDeps> = {},
   quoted: string[] = ['AAPL'],
+  /** 交易所状态：默认盘中（live）；夜盘用例需要 CLOSED（settled） */
+  status: MarketStatus = 'REG_MKT',
 ): { db: Db; app: FastifyInstance } {
   const db = openDb(':memory:')
   for (const f of funds) {
@@ -57,7 +59,7 @@ function makeApp(
     {
       db,
       registry: registryStub(quoted),
-      status: async () => 'REG_MKT',
+      status: async () => status,
       ensureMarkets: async () => {},
     },
     {
@@ -231,5 +233,182 @@ describe('GET /api/estimate · 组合快照落库与节流', () => {
     expect(status).toBe(200)
     expect(body.funds).toHaveLength(1)
     expect(body.funds[0].navPct).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * 夜盘（盘后）估值。三条必须钉死的边界：
+ *   ① 只有 phase === 'settled' 才发请求、才出数；
+ *   ② 覆盖率 < 0.3 时整块省掉（不是 0，也不是「—」）；
+ *   ③ 这条腿怎么坏都不能影响收盘估值那条腿。
+ */
+describe('GET /api/estimate · 夜盘（afterHours）', () => {
+  /** 两只美股，权重合计 0.9 —— 稳过 0.3 的门槛 */
+  const NIGHT_HOLDINGS: Holding[] = [
+    { symbol: 'AAPL', name: '苹果', weight: 0.5, market: 105 },
+    { symbol: 'MSFT', name: '微软', weight: 0.4, market: 105 },
+  ]
+  /** 2026-11-09 19:59 EST */
+  const AH_TS = Date.parse('2026-11-10T00:59:00Z')
+
+  const quoteOf = (symbol: string, pct: number): [string, AfterHoursQuote] => [
+    symbol,
+    { symbol, price: 100, pct, tsMs: AH_TS },
+  ]
+  const allQuoted = (pct: number) => (symbols: string[]) =>
+    Promise.resolve(new Map(symbols.map((s) => quoteOf(s, pct))))
+
+  it('settled 且覆盖率 ≥ 0.3：多出第二组数字，收盘口径的 navPct 不被改动', async () => {
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      {
+        loadHoldings: async () => ({ holdings: NIGHT_HOLDINGS, weightsFrom: 'index' }),
+        afterHours: allQuoted(1),
+      },
+      ['AAPL', 'MSFT'],
+      'CLOSED',
+    )
+    const { status, body } = await get(app)
+    expect(status).toBe(200)
+    expect(body.phase).toBe('settled')
+
+    const f = body.funds[0]
+    // 收盘那条腿：这两只成分当日都是 +2.3%，权重 0.9 全覆盖 → 成分加权口径
+    // （本文件 INDICES 的纳指 symbol 是 'NDX' 而非 'NDX100'，所以指数腿不生效）
+    expect(f.navPct).toBeCloseTo(0.95 * ((1.023 * (7.2 / 7.18) - 1) * 100), 6)
+    // 夜盘那条腿：0.95·((1.01)(7.2/7.18)−1)·100
+    expect(f.afterHours).toBeDefined()
+    expect(f.afterHours.coveredWeight).toBeCloseTo(0.9, 6)
+    expect(f.afterHours.navPct).toBeCloseTo(1.2173, 3)
+    expect(f.afterHours.amount).toBeCloseTo(89.73, 2)
+    expect(f.afterHours.asOfMs).toBe(AH_TS)
+    // 两条腿互不覆盖：夜盘不是把 navPct 改小
+    expect(f.afterHours.navPct).not.toBeCloseTo(f.navPct, 2)
+  })
+
+  it('盘中（phase=live）不发夜盘请求，也不出数', async () => {
+    const spy = vi.fn(allQuoted(1))
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      { loadHoldings: async () => ({ holdings: NIGHT_HOLDINGS, weightsFrom: 'index' }), afterHours: spy },
+      ['AAPL', 'MSFT'],
+      'REG_MKT',
+    )
+    const { body } = await get(app)
+    expect(body.phase).toBe('live')
+    expect(spy).not.toHaveBeenCalled()
+    expect('afterHours' in body.funds[0]).toBe(false)
+  })
+
+  it('盘前也是 live，同样不出夜盘（那是三小时以后的事）', async () => {
+    const spy = vi.fn(allQuoted(1))
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      { loadHoldings: async () => ({ holdings: NIGHT_HOLDINGS, weightsFrom: 'index' }), afterHours: spy },
+      ['AAPL', 'MSFT'],
+      'PRE_MKT',
+    )
+    const { body } = await get(app)
+    expect(spy).not.toHaveBeenCalled()
+    expect('afterHours' in body.funds[0]).toBe(false)
+  })
+
+  it('覆盖率只有 0.1 → 整块省掉（外推是噪声，宁可不给）', async () => {
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      {
+        loadHoldings: async () => ({
+          holdings: [{ symbol: 'AAPL', name: '苹果', weight: 0.1, market: 105 }],
+          weightsFrom: 'top10',
+        }),
+        afterHours: allQuoted(3),
+      },
+      ['AAPL'],
+      'CLOSED',
+    )
+    const { body } = await get(app)
+    const f = body.funds[0]
+    expect('afterHours' in f).toBe(false)
+    // 收盘估值照常
+    expect(f.coveredWeight).toBeCloseTo(0.1, 6)
+    expect(Number.isFinite(f.navPct)).toBe(true)
+  })
+
+  it('一只都没有盘后行情 → 空 Map → 省掉整块，而不是写 0', async () => {
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      {
+        loadHoldings: async () => ({ holdings: NIGHT_HOLDINGS, weightsFrom: 'index' }),
+        afterHours: async () => new Map(),
+      },
+      ['AAPL', 'MSFT'],
+      'CLOSED',
+    )
+    const { status, body } = await get(app)
+    expect(status).toBe(200)
+    expect('afterHours' in body.funds[0]).toBe(false)
+  })
+
+  it('夜盘取数抛错也不污染请求：200 + 收盘估值照常', async () => {
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      {
+        loadHoldings: async () => ({ holdings: NIGHT_HOLDINGS, weightsFrom: 'index' }),
+        afterHours: async () => {
+          throw new Error('sina down')
+        },
+      },
+      ['AAPL', 'MSFT'],
+      'CLOSED',
+    )
+    const { status, body } = await get(app)
+    expect(status).toBe(200)
+    expect('afterHours' in body.funds[0]).toBe(false)
+    expect(body.funds[0].navPct).toBeCloseTo(0.95 * ((1.023 * (7.2 / 7.18) - 1) * 100), 6)
+  })
+
+  it('只把美股代码送去取夜盘：港股在取价前已被剔除', async () => {
+    const seen: string[] = []
+    const spy = vi.fn(async (symbols: string[]) => {
+      seen.push(...symbols)
+      return new Map(symbols.map((s) => quoteOf(s, 1)))
+    })
+    // 默认 HOLDINGS['270042'] = AAPL 0.5 + 腾讯 00700 0.1
+    const { app } = makeApp(
+      [{ code: '270042', name: '纳指', indexKey: 'ndx' }],
+      { afterHours: spy },
+      ['AAPL'],
+      'CLOSED',
+    )
+    const { body } = await get(app)
+    expect(seen).toEqual(['AAPL'])
+    expect(body.funds[0].afterHours.coveredWeight).toBeCloseTo(0.5, 6)
+  })
+
+  it('多只基金各算各的：没有夜盘的那只不带 afterHours', async () => {
+    const { app } = makeApp(
+      [
+        { code: '270042', name: '纳指', indexKey: 'ndx' },
+        { code: '000001', name: '无盘后', indexKey: null },
+      ],
+      {
+        loadHoldings: async (fund) =>
+          fund.code === '270042'
+            ? { holdings: NIGHT_HOLDINGS, weightsFrom: 'index' }
+            : {
+                holdings: [{ symbol: 'TSLA', name: '特斯拉', weight: 0.3, market: 105 }],
+                weightsFrom: 'top10',
+              },
+        // 只给 AAPL/MSFT 盘后行情，TSLA 没有
+        afterHours: async (symbols) =>
+          new Map(symbols.filter((s) => s !== 'TSLA').map((s) => quoteOf(s, 1))),
+      },
+      ['AAPL', 'MSFT', 'TSLA'],
+      'CLOSED',
+    )
+    const { body } = await get(app)
+    const byCode = Object.fromEntries(body.funds.map((f: { code: string }) => [f.code, f]))
+    expect(byCode['270042'].afterHours).toBeDefined()
+    expect('afterHours' in byCode['000001']).toBe(false)
   })
 })

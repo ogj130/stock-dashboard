@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify'
 import type { Db } from '../store/db'
 import type { QuoteRegistry } from '../sources/registry'
-import type { Holding, MarketStatus, Phase, Quote } from '../types'
+import type { AfterHoursQuote, Holding, MarketStatus, Phase, Quote } from '../types'
 import { buildEstimate, type FundEstimate } from '../engine/pipeline'
 import { derivePhase } from '../engine/phase'
 import { fetchPosition, resolveHoldingsFrom } from '../fund/holdings'
 import { fetchIndexWeights } from '../fund/indexWeight'
 import { fetchUsdCny, fetchUsdCnyFallback, loadCachedFx, saveFx, type FxRate } from '../sources/fx'
 import { createMarketIndicesCache, type MarketIndex } from '../sources/marketIndices'
+import { fetchAfterHours } from '../sources/afterHours'
 import { listFunds, upsertNav, type FundRow } from '../store/queries'
 import { recordSnapshot } from '../store/portfolio'
 import { CONFIG } from '../config'
@@ -38,6 +39,8 @@ export interface EstimateDeps {
   latestNav?: (code: string) => Promise<number>
   /** 底部指数条。默认 30 秒缓存 + 东财；测试按需注入，保持完全离线 */
   marketIndices?: () => Promise<MarketIndex[]>
+  /** 夜盘（盘后）行情。默认新浪单源 + 60 秒缓存；只在 phase === 'settled' 时才被调用 */
+  afterHours?: (symbols: string[]) => Promise<Map<string, AfterHoursQuote>>
 }
 
 /**
@@ -83,6 +86,7 @@ export function registerEstimateRoutes(
   const latestNav = deps.latestNav ?? ((code: string) => resolveNav(ctx.db, code))
   const resolveFx = deps.resolveFx ?? (() => resolveFxRate(ctx.db))
   const fetchIndices = deps.marketIndices ?? createMarketIndicesCache()
+  const readAfterHours = deps.afterHours ?? fetchAfterHours
 
   app.get('/api/estimate', async (): Promise<EstimateResponse> => {
     const funds = listFunds(ctx.db)
@@ -119,8 +123,13 @@ export function registerEstimateRoutes(
 
     // 顺序不能颠倒：东财对市场码未知的票整批返回 data:null（实测 162411 猜 105 → 0/10，正确 106 → 10/10）
     if (symbols.length > 0) await ctx.ensureMarkets(symbols, known)
-    const quotes = await getQuotesSafely(app, ctx.registry, symbols)
-    const navs = await Promise.all(resolved.map(({ fund }) => latestNav(fund.code)))
+    // 三条腿并行：行情决定 navPct，净值决定金额，盘后只补第二个读数。
+    // 盘后那条腿自己吞掉所有异常，慢也不过 5 秒超时，拖不垮估值。
+    const [quotes, navs, afterHours] = await Promise.all([
+      getQuotesSafely(app, ctx.registry, symbols),
+      Promise.all(resolved.map(({ fund }) => latestNav(fund.code))),
+      getAfterHoursSafely(app, readAfterHours, symbols, phase),
+    ])
 
     const estimates = resolved.map((r, i) =>
       buildEstimate({
@@ -140,6 +149,7 @@ export function registerEstimateRoutes(
         weightsFrom: r.weightsFrom,
         indexPct: indexPctFor(r.fund.index_key, marketIndices),
         board: boardOf(r.fund.index_key),
+        afterHours,
       }),
     )
 
@@ -259,6 +269,28 @@ async function getQuotesSafely(
     return await registry.getQuotes(symbols, { crossCheck: false })
   } catch (err) {
     app.log.warn({ err, wanted: symbols.length }, 'quotes unavailable; estimating with zero coverage')
+    return new Map()
+  }
+}
+
+/**
+ * 夜盘行情。相位不是 settled 就直接返回空 Map——**不发请求**。
+ *
+ * 盘中谈「夜盘」没有意义（那是三个小时以后的事），周末/盘前也没有夜盘成交；
+ * 空 Map 会让 buildEstimate 整块省掉 afterHours，界面那一行自然消失
+ * （而不是显示「夜盘 —」）。取数本身永不抛错，这里的 catch 只是最后一道保险。
+ */
+async function getAfterHoursSafely(
+  app: FastifyInstance,
+  read: (symbols: string[]) => Promise<Map<string, AfterHoursQuote>>,
+  symbols: string[],
+  phase: Phase,
+): Promise<Map<string, AfterHoursQuote>> {
+  if (phase !== 'settled' || symbols.length === 0) return new Map()
+  try {
+    return await read(symbols)
+  } catch (err) {
+    app.log.warn({ err, wanted: symbols.length }, 'after-hours quotes unavailable; night row hidden')
     return new Map()
   }
 }

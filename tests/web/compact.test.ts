@@ -329,3 +329,48 @@ describe('deriveCompactView · 列表随汇总一起派生', () => {
     expect(view.totalText).toBe('136,000.00')
   })
 })
+
+/**
+ * 脚注第三段「· 夜盘 +0.32%」。
+ *
+ * 唯一必须守住的是「没有就不渲染」：盘前、周末、源挂了的时候，
+ * 卡片上不能出现「夜盘 —」，也不能出现「夜盘 +0.00%」。
+ */
+describe('deriveCompactView · 夜盘段', () => {
+  const night = (navPct: number, asOfMs = Date.parse('2026-11-10T00:59:00Z')) => ({
+    navPct,
+    amount: 0,
+    coveredWeight: 0.9,
+    asOfMs,
+  })
+
+  it('有夜盘数据 → 脚注第三段是加权后的百分比', () => {
+    const view = deriveCompactView(
+      input({
+        funds: [
+          fund({ code: 'A', marketValue: 90_000, afterHours: night(0.4) }),
+          fund({ code: 'B', marketValue: 10_000, afterHours: night(-1.4) }),
+        ],
+      }),
+    )
+    // (0.4·9 − 1.4·1) / 10 = 0.22%
+    expect(view.afterHoursText).toBe('夜盘 +0.22%')
+  })
+
+  it('只有一个基金有夜盘也照常显示（不是只在大仓位时才有）', () => {
+    const view = deriveCompactView(
+      input({ funds: [fund({ code: 'A', afterHours: night(1.234) }), fund({ code: 'B' })] }),
+    )
+    expect(view.afterHoursText).toBe('夜盘 +1.23%')
+  })
+
+  it('一只都没有 → null（整段不渲染，绝不写「夜盘 —」）', () => {
+    const view = deriveCompactView(input({ funds: [fund(), fund({ code: 'B' })] }))
+    expect(view.afterHoursText).toBeNull()
+  })
+
+  it('空列表 / 连不上后端时也是 null，不会凭空冒出一段夜盘', () => {
+    expect(deriveCompactView(input({ funds: [] })).afterHoursText).toBeNull()
+    expect(deriveCompactView(input({ funds: [], error: 'boom' })).afterHoursText).toBeNull()
+  })
+})

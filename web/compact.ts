@@ -9,6 +9,7 @@
  * 这个文件不 import React、不 import CSS：node 里能直接单测。
  */
 
+import { summarizeAfterHours, type AfterHoursLite } from './afterHours'
 import { money, pctText, signedMoney, tone } from './format'
 
 export const COMPACT_QUERY_KEY = 'compact'
@@ -57,6 +58,8 @@ export interface CompactFund {
   navPct: number
   /** 0 = 这一只没有可用行情（引擎仍会给一个由汇率腿算出的 navPct，那个不能当涨跌） */
   coveredWeight: number
+  /** 夜盘（盘后）读数；没有就是 undefined，卡片脚注那一小段随之整体消失 */
+  afterHours?: AfterHoursLite
 }
 
 /**
@@ -136,6 +139,8 @@ export interface CompactView {
   phaseText: string
   /** 更新时刻 '04:32'，还没取到数据时是 '—' */
   clockText: string
+  /** 脚注第三段 '夜盘 +0.32%'；没有任何夜盘数据时是 null（整段不渲染，不写「—」） */
+  afterHoursText: string | null
   /** 降级说明（还没有基金 / 连不上后端 / 正在读取…）；正常时为 null */
   note: string | null
   /** 没有可用行情的只数；>0 且 quotesAvailable 时脚注提示，避免让人以为只算了全部 */
@@ -170,6 +175,12 @@ export function compactClock(atMs: number | null): string {
   return CLOCK.format(new Date(atMs))
 }
 
+/** 脚注那一段的文案 '夜盘 +0.32%'；没有数据时 null */
+function nightLine(funds: readonly CompactFund[]): string | null {
+  const night = summarizeAfterHours(funds)
+  return night === null ? null : `夜盘 ${pctText(night.pct)}`
+}
+
 /**
  * 把一轮数据压成卡片要显示的那几个字符串。
  *
@@ -190,6 +201,7 @@ export function deriveCompactView(input: CompactInput): CompactView {
     holdText: DASH,
     phaseText: phase === 'live' ? PHASE_LIVE_TEXT : PHASE_SETTLED_TEXT,
     clockText: compactClock(updatedAt),
+    afterHoursText: null,
     note: null,
     blindCount: 0,
     quotesAvailable: false,
@@ -224,6 +236,8 @@ export function deriveCompactView(input: CompactInput): CompactView {
     deltaTone: quotesAvailable ? tone(amount) : 'flat',
     holdText: signedMoney(holdProfit),
     note: error !== null ? '连不上后端' : null,
+    // 夜盘汇总只认「确实有盘后行情」的基金；一只都没有时整段消失
+    afterHoursText: nightLine(funds),
     blindCount,
     quotesAvailable,
     rows: deriveFundRows(funds),

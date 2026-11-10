@@ -5,6 +5,7 @@ import PortfolioChart, {
   type HistoryResponse,
   type RangeKey,
 } from './PortfolioChart'
+import { afterHoursClock, summarizeAfterHours, type AfterHoursLite } from './afterHours'
 import { money, pctText, signedMoney, tone } from './format'
 
 /**
@@ -42,6 +43,8 @@ interface FundEstimate {
   breakdown: Breakdown[]
   /** 关联板块（跟踪指数的中文名）；null 表示没配 index_key */
   board: string | null
+  /** 夜盘读数。没有盘后行情 / 覆盖率 < 30% / 盘中时后端根本不发这个键 */
+  afterHours?: AfterHoursLite
 }
 
 interface FxLeg {
@@ -321,6 +324,13 @@ export default function App() {
   const totalCost = visible.reduce((sum, f) => sum + f.costBasis, 0)
   const totalHoldingPct = totalCost === 0 ? null : (totalHoldingProfit / totalCost) * 100
 
+  /**
+   * 夜盘汇总：与上面几个数字同一口径（只统计当前 tab），几只基金按市值加权。
+   * 没有任何一只带夜盘读数时是 null——那一行整行不渲染，不写「夜盘 —」。
+   */
+  const night = summarizeAfterHours(visible)
+  const nightClock = night === null ? null : afterHoursClock(night.asOfMs)
+
   function toggleSort(key: SortKey) {
     setSort((prev) =>
       prev.key === key ? { key, dir: prev.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' },
@@ -391,6 +401,19 @@ export default function App() {
                 <span className="num">{fx.rate.toFixed(4)}</span>{' '}
                 <span className={`num ${tone(fx.pct)}`}>{pctText(fx.pct)}</span>
               </span>
+            </div>
+          )}
+          {night !== null && (
+            <div className="phase ah">
+              <span className="phase-item">
+                夜盘估值 <span className={`num ${tone(night.pct)}`}>{pctText(night.pct)}</span>
+              </span>
+              {nightClock !== null && (
+                <>
+                  <span className="sep">·</span>
+                  <span className="phase-item">更新于 {nightClock}</span>
+                </>
+              )}
             </div>
           )}
           <div className="stamp">

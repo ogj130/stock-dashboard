@@ -14,6 +14,23 @@ export interface Quote {
   sourceId: string
 }
 
+/**
+ * 盘后（美东 16:00–20:00 ET）的单只行情。
+ *
+ * 刻意**不是** Quote：Quote 的契约是「一只票一条、price 是常规时段成交价」，
+ * 盘后价是同一只票的第二条序列。塞进 Quote 会被 registry 的「一只票一条」去重
+ * 当成重复项吃掉，也容易让 navPct 与盘后价悄悄串线。
+ */
+export interface AfterHoursQuote {
+  symbol: string
+  /** 盘后最新成交价 */
+  price: number
+  /** 盘后涨跌幅（百分数），基准是当日**常规收盘价** */
+  pct: number
+  /** 盘后最后一笔成交时间（epoch ms） */
+  tsMs: number
+}
+
 export interface MarketSnapshot {
   status: MarketStatus
   tsMs: number

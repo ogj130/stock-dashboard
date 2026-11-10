@@ -145,6 +145,17 @@ body {
   opacity: 0.45;
 }
 
+/* 夜盘那一行：亮度比相位行高一点——它是"多给你的一条读数"，不是状态标签。
+   没有任何夜盘数据时 React 整行不渲染，所以这里不需要 :empty 之类的兜底 */
+.summary .ah {
+  color: var(--text);
+  opacity: 0.88;
+}
+
+.summary .ah .num {
+  font-weight: 600;
+}
+
 /* 汇率那一小段不能被折成两行（"USD/CNY" 和数字分开就看不懂了） */
 .fx {
   display: inline-flex;
