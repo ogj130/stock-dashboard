@@ -412,3 +412,88 @@ describe('GET /api/estimate · 夜盘（afterHours）', () => {
     expect('afterHours' in byCode['000001']).toBe(false)
   })
 })
+
+/**
+ * 指数口径可用性。
+ *
+ * 这是「闭市后估值还在漂」的直接病根：指数条取不到 NDX100 → indexPct 变 undefined
+ * → navPct 从「官方指数涨跌幅」静默退回「自算成分加权」。两套方法论，数字看着都正常，
+ * 界面完全看不出来。所以必须有一个如实的标记 + 一条 warn。
+ */
+describe('GET /api/estimate · 指数口径可用性（indexPctAvailable）', () => {
+  /** 2026-11-10 闭市后实测：东财空 body，这四条来自新浪 */
+  const STRIP: MarketIndex[] = [
+    { symbol: '000001', name: '上证指数', value: 3667.8157, change: 7.024, pct: 0.19 },
+    { symbol: '399001', name: '深证成指', value: 11245.62, change: 100.132, pct: 0.9 },
+    { symbol: 'NDX100', name: '纳斯达克100', value: 27907.6251, change: 917.6336, pct: 3.4 },
+    { symbol: 'SPX', name: '标普500', value: 7549.9399, change: 173.08, pct: 2.35 },
+  ]
+  const FX = 7.2 / 7.18
+
+  it('拿到 NDX100 → indexPctAvailable=true，navPct 走指数口径（≈ 指数 × 仓位）', async () => {
+    const { app } = makeApp([{ code: '270042', name: '纳指', indexKey: 'ndx' }], {
+      marketIndices: async () => STRIP,
+    })
+    const { body } = await get(app)
+    const f = body.funds[0]
+    expect(f.indexPctAvailable).toBe(true)
+    expect(f.weightsFrom).toBe('index')
+    expect(f.navPct).toBeCloseTo(0.95 * ((1 + 3.4 / 100) * FX - 1) * 100, 6)
+    // 指数 × 仓位是 3.23；汇率那条腿（7.2/7.18−1 ≈ +0.28%）再复合上来，落在 3.2~3.6 之间
+    expect(f.navPct).toBeGreaterThan(3.2)
+    expect(f.navPct).toBeLessThan(3.6)
+  })
+
+  it('配了 index_key 但指数条没有 NDX100 → 标记为 false，weightsFrom 仍是 index', async () => {
+    // 默认 INDICES 里纳指那一行 symbol 是 'NDX'（综合指数），映射不到 NDX100
+    const { app } = makeApp([{ code: '270042', name: '纳指', indexKey: 'ndx' }])
+    const { body } = await get(app)
+    const f = body.funds[0]
+    expect(f.indexPctAvailable).toBe(false)
+    // 权重口径没变（成分名单来自指数全量），变的只是涨跌幅算法 —— 这正是要标出来的事
+    expect(f.weightsFrom).toBe('index')
+    // 退回了成分加权自算：0.95·((1.023)(7.2/7.18)−1)·100
+    expect(f.navPct).toBeCloseTo(0.95 * ((1.023 * FX - 1) * 100), 6)
+  })
+
+  it('两个源全挂（指数条为空数组）→ 200、指数条空、该基金标记 false', async () => {
+    const { app } = makeApp([{ code: '270042', name: '纳指', indexKey: 'ndx' }], {
+      marketIndices: async () => [],
+    })
+    const { status, body } = await get(app)
+    expect(status).toBe(200)
+    expect(body.marketIndices).toEqual([])
+    const f = body.funds[0]
+    expect(f.indexPctAvailable).toBe(false)
+    expect(f.weightsFrom).toBe('index')
+    expect(Number.isFinite(f.navPct)).toBe(true)
+  })
+
+  it('没配 index_key 的基金一律 false（它本来就不该走指数口径）', async () => {
+    const { app } = makeApp([{ code: '000001', name: '无指数', indexKey: null }], {
+      marketIndices: async () => STRIP,
+    })
+    const { body } = await get(app)
+    expect(body.funds[0].indexPctAvailable).toBe(false)
+  })
+
+  it('口径降级时打一条 warn（否则这个故障只能靠肉眼看数字漂移才能发现）', async () => {
+    const warn = vi.fn()
+    const { app } = makeApp(
+      // 用独立代码：warn 节流按基金代码记 60 秒，别被别的用例吃掉
+      [{ code: '888001', name: '独立纳指', indexKey: 'ndx' }],
+      {
+        marketIndices: async () => [],
+        loadHoldings: async () => ({
+          holdings: [{ symbol: 'AAPL', name: '苹果', weight: 0.5, market: 105 }],
+          weightsFrom: 'index',
+        }),
+      },
+    )
+    app.log.warn = warn as unknown as typeof app.log.warn
+    await get(app)
+    const messages = warn.mock.calls.map((call) => String(call[1]))
+    expect(messages).toContain('index pct unavailable; estimate falls back to constituent weighting')
+    expect(messages).toContain('marketIndices has no NDX100; index funds lose their official pct')
+  })
+})

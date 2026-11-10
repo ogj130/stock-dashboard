@@ -38,6 +38,11 @@ interface FundEstimate {
   holdingsCount: number
   lagDays: number
   weightsFrom: WeightsFrom
+  /**
+   * 官方指数涨跌幅是否真的拿到了。false 且 weightsFrom='index' 时说明
+   * 「成分是指数口径、涨跌幅却是自算的」——方法论已经换了，必须让用户看见。
+   */
+  indexPctAvailable: boolean
   excluded: { hk: number }
   missing: string[]
   breakdown: Breakdown[]
@@ -519,6 +524,11 @@ export default function App() {
                     )}
                     {f.weightsFrom === 'none' && (
                       <span className="chip bad">未取到持仓，无法估值</span>
+                    )}
+                    {/* 规则 4：成分是指数口径、涨跌幅却退回了自算 —— 口径换了就必须说出来，
+                        否则数字看着正常却会随盘后零星成交漂（这正是「闭市后还在动」的成因） */}
+                    {f.weightsFrom === 'index' && !f.indexPctAvailable && (
+                      <span className="chip warn">指数口径不可用，当前为成分加权</span>
                     )}
                     {!uncovered(f) && f.missing.length > 0 && (
                       <span className="chip">缺 {f.missing.length} 只行情</span>

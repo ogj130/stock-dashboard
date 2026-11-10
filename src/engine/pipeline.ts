@@ -47,6 +47,16 @@ export interface FundEstimate {
   holdingsCount: number
   lagDays: number
   weightsFrom: 'index' | 'top10' | 'none'
+  /**
+   * 官方指数涨跌幅是否真的拿到了。
+   *
+   * 为什么单独一个标记：`weightsFrom === 'index'` 只说明**成分权重**来自指数全量名单，
+   * 不代表涨跌幅走了指数口径。指数涨跌幅取不到时（东财闭市后返回空 body），
+   * navPct 会静默退回成分加权自算——那是**另一套方法论**，数字却看着一样正常，
+   * 还会随盘后零星成交一直漂。这里如实标出来，界面才能说
+   * 「指数口径不可用，当前为成分加权」，而不是让人以为看到的是指数口径。
+   */
+  indexPctAvailable: boolean
   /** 关联板块：跟踪指数的中文名，界面用它分 tab、也对它去匹配指数涨跌幅 */
   board: string | null
   /** 让界面能说"含港股 N 只，已排除" */
@@ -129,6 +139,9 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     holdingsCount: available.length,
     lagDays: input.lagDays,
     weightsFrom: input.weightsFrom ?? (holdings.length > 0 ? 'top10' : 'none'),
+    // 唯一真源就是 indexPct 本身：拿到且是有限数才算「指数口径生效」，
+    // 不另设一个可以被忘掉同步的入参（那正是这次静默降级的成因）
+    indexPctAvailable: input.indexPct !== undefined && Number.isFinite(input.indexPct),
     board: input.board ?? null,
     excluded: { hk: input.excludedHk ?? 0 },
     missing,

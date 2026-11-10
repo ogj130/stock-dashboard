@@ -87,6 +87,8 @@ export function registerEstimateRoutes(
   const resolveFx = deps.resolveFx ?? (() => resolveFxRate(ctx.db))
   const fetchIndices = deps.marketIndices ?? createMarketIndicesCache()
   const readAfterHours = deps.afterHours ?? fetchAfterHours
+  // 节流状态挂在这次注册上：每个 app 实例各记各的，测试之间也不会互相吃掉 warn
+  const warnThrottled = createWarnThrottle(app)
 
   app.get('/api/estimate', async (): Promise<EstimateResponse> => {
     const funds = listFunds(ctx.db)
@@ -101,6 +103,15 @@ export function registerEstimateRoutes(
       getMarketIndicesSafely(app, fetchIndices),
     ])
     const phase = derivePhase(status)
+    // 指数条整条命脉是 NDX100：纳指基金的指数口径全靠它。缺了就是估值方法论已经换了，
+    // 必须能在日志里看见（界面那侧靠 FundEstimate.indexPctAvailable 标注）
+    if (!marketIndices.some((m) => m.symbol === NDX100_SYMBOL)) {
+      warnThrottled(
+        'index-strip:ndx100',
+        { got: marketIndices.map((m) => m.symbol) },
+        'marketIndices has no NDX100; index funds lose their official pct',
+      )
+    }
     if (funds.length === 0) return { funds: [], phase, targetNavDate, fx: null, marketIndices }
 
     const [fx, resolved] = await Promise.all([
@@ -131,8 +142,19 @@ export function registerEstimateRoutes(
       getAfterHoursSafely(app, readAfterHours, symbols, phase),
     ])
 
-    const estimates = resolved.map((r, i) =>
-      buildEstimate({
+    const estimates = resolved.map((r, i) => {
+      const indexPct = indexPctFor(r.fund.index_key, marketIndices)
+      // 口径漂移必须留痕：配了 index_key、成分名单也拿全了，但指数涨跌幅没拿到。
+      // 这一只的 navPct 会走成分加权自算（另一套方法论），数字看着一样正常却是另一回事，
+      // 所以既打一条 warn，也在响应里用 indexPctAvailable=false 如实标出来。
+      if (r.fund.index_key && indexPct === undefined) {
+        warnThrottled(
+          `index-pct:${r.fund.code}`,
+          { code: r.fund.code, indexKey: r.fund.index_key, weightsFrom: r.weightsFrom },
+          'index pct unavailable; estimate falls back to constituent weighting',
+        )
+      }
+      return buildEstimate({
         code: r.fund.code,
         name: r.fund.name || r.fund.code,
         shares: r.fund.shares,
@@ -147,11 +169,11 @@ export function registerEstimateRoutes(
         phase,
         excludedHk: r.excludedHk,
         weightsFrom: r.weightsFrom,
-        indexPct: indexPctFor(r.fund.index_key, marketIndices),
+        indexPct,
         board: boardOf(r.fund.index_key),
         afterHours,
-      }),
-    )
+      })
+    })
 
     logEstimates(
       ctx.db,
@@ -422,6 +444,34 @@ function recordSnapshotSafely(
 
 /** index_key → 大盘行情里的指数代码，用于取官方涨跌幅 */
 const INDEX_SYMBOL: Record<string, string> = { ndx: 'NDX100', sp500: 'SPX' }
+
+/**
+ * 纳斯达克100 在指数条里的 symbol。它必须与 sources/marketIndices 的规范表一致：
+ * 两个来源（东财 secid 100.NDX100 / 新浪 gb_ndx）都落在 'NDX100' 上，它是这条估值链的命门。
+ */
+const NDX100_SYMBOL = 'NDX100'
+
+/**
+ * 同一个键 60 秒最多一条 warn。
+ *
+ * 5 秒轮询下，一条「指数取不到」的 warn 会变成每分钟 12 行背景噪音，
+ * 真出问题的时候反而没人看得见。这个节流只压重复，不压第一次。
+ *
+ * 工厂而不是模块级单例：节流状态属于「这一次注册」，测试各拿各的，互不串味。
+ */
+function createWarnThrottle(
+  app: FastifyInstance,
+  ttlMs = 60_000,
+): (key: string, payload: Record<string, unknown>, msg: string) => void {
+  const seen = new Map<string, number>()
+  return (key, payload, msg) => {
+    const now = Date.now()
+    const at = seen.get(key)
+    if (at !== undefined && now - at < ttlMs) return
+    seen.set(key, now)
+    app.log.warn(payload, msg)
+  }
+}
 
 /**
  * 指数基金直接用官方指数涨跌，不再自算成分加权。
