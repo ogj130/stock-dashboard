@@ -16,6 +16,11 @@ export interface Quote {
   price: number
   prevClose: number
   pct: number          // 当日涨跌幅，百分数（2.31 表示 +2.31%）
+  /**
+   * 当日成交额（美元）。只有「个股热度」排序消费它，不参与任何估值计算。
+   * 腾讯 [37]、东财 f6 有；CNBC / 新浪缺这个字段时保持 undefined（绝不写 0 占位）。
+   */
+  turnover?: number
   tsMs: number
   precision: number
   sourceId: string

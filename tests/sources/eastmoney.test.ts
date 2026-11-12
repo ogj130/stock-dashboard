@@ -4,7 +4,7 @@ import { normalizeEastmoney, toSecid, EastmoneySource } from '../../src/sources/
 const RAW = {
   data: {
     diff: [
-      { f2: 350170, f3: 228, f12: 'AAPL', f13: 105, f14: '苹果', f18: 342370 },
+      { f2: 350170, f3: 228, f6: 5671975014, f12: 'AAPL', f13: 105, f14: '苹果', f18: 342370 },
       { f2: 542330, f3: 221, f12: 'MSFT', f13: 105, f14: '微软', f18: 530610 },
     ],
   },
@@ -17,6 +17,12 @@ describe('eastmoney', () => {
     expect(q.price).toBeCloseTo(350.17, 3)
     expect(q.prevClose).toBeCloseTo(342.37, 3)
     expect(q.pct).toBeCloseTo(2.28, 3)
+  })
+
+  it('f6 是当日成交额（不再缩放），缺失时不写键', () => {
+    const [aapl, msft] = normalizeEastmoney(RAW)
+    expect(aapl!.turnover).toBe(5_671_975_014)
+    expect(msft).not.toHaveProperty('turnover')
   })
 
   it('沪深美股市场码映射正确', () => {

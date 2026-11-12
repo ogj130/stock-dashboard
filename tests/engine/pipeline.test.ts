@@ -39,6 +39,25 @@ describe('buildEstimate', () => {
     expect(sum).toBeCloseTo(r.navPct, 6)
   })
 
+  it('breakdown 带上成交额与行情源的中文名（只服务卡片「个股」）', () => {
+    const withMeta = new Map(quotes)
+    withMeta.set('AAPL', {
+      ...quotes.get('AAPL')!,
+      name: '苹果',
+      turnover: 5_671_975_014,
+    })
+    const r = buildEstimate({
+      code: 'X', name: 'X', shares: 1, costBasis: 1, nav: 1,
+      holdings, quotes: withMeta, fxNow: 7, fxPrev: 7, exposure: 1, lagDays: 1, phase: 'live',
+    })
+    const aapl = r.breakdown.find((b) => b.symbol === 'AAPL')!
+    expect(aapl.name).toBe('苹果')
+    expect(aapl.turnover).toBe(5_671_975_014)
+    // 另一只没有成交额：连键都不出现，卡片才能识别「热度未知」而不是热度 0
+    const msft = r.breakdown.find((b) => b.symbol === 'MSFT')!
+    expect(msft).not.toHaveProperty('turnover')
+  })
+
   it('缺行情的股票被剔除，覆盖率如实反映', () => {
     const partial = new Map(quotes)
     partial.delete('MSFT')

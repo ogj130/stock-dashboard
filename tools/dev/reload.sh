@@ -47,6 +47,12 @@ fi
 echo "==> 4/4 拉起卡片"
 pkill -f "${CARD_BIN}" 2>/dev/null || true
 sleep 0.4
+# 重建会把整个 .app 删掉重写，LaunchServices 里可能还记着旧 bundle 的 inode。
+# 不重新登记时 `open` 会报「executable is missing」——文件明明在，2026-11-12 实际踩到过。
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "${LSREGISTER}" ]; then
+  "${LSREGISTER}" -f "$(cd "$(dirname "${CARD_APP}")" && pwd)/$(basename "${CARD_APP}")" 2>/dev/null || true
+fi
 open "${CARD_APP}"
 for _ in $(seq 1 20); do
   pid=$(pgrep -f "${CARD_BIN}" | head -1 || true)

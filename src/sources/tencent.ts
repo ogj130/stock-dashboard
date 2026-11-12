@@ -5,8 +5,8 @@ const BASE = 'https://qt.gtimg.cn/q='
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
 
-// 字段索引实测于 2026-11-10，整包共 73 个 '~' 分隔字段
-const IDX = { status: 0, name: 1, code: 2, price: 3, prevClose: 4, time: 30, pct: 32 } as const
+// 字段索引实测于 2026-11-10 / 2026-11-12，整包共 73 个 '~' 分隔字段
+const IDX = { status: 0, name: 1, code: 2, price: 3, prevClose: 4, time: 30, pct: 32, turnover: 37 } as const
 
 /**
  * 把 "2026-11-09 12:36:20"（美东）转成毫秒时间戳。
@@ -35,11 +35,16 @@ export function parseTencent(raw: string): Quote[] {
     const price = Number(f[IDX.price])
     const prevClose = Number(f[IDX.prevClose])
     if (!Number.isFinite(price) || !Number.isFinite(prevClose)) continue
+    // [1] 是中文名（苹果/英伟达），[37] 是当日成交额（美元）。
+    // 缺成交额时连键都不写：卡片据此退回按组合权重重排，而不是把「热度」当成 0。
+    const turnover = Number(f[IDX.turnover])
     out.push({
       symbol: m[1]!,
+      ...(f[IDX.name]?.trim() ? { name: f[IDX.name]!.trim() } : {}),
       price,
       prevClose,
       pct: Number(f[IDX.pct] ?? 0),
+      ...(Number.isFinite(turnover) && turnover > 0 ? { turnover } : {}),
       tsMs: etToMs(f[IDX.time] ?? ''),
       precision: 3,
       sourceId: 'tencent',

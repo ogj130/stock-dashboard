@@ -2,7 +2,7 @@ import type { Quote } from '../types'
 import type { Capability, QuoteSource } from './types'
 
 const BASE = 'https://push2.eastmoney.com/api/qt/ulist.np/get'
-const FIELDS = 'f2,f3,f12,f13,f14,f18'
+const FIELDS = 'f2,f3,f6,f12,f13,f14,f18'
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
 
@@ -17,6 +17,8 @@ export function toSecid(symbol: string, market: number): string {
 interface EmRow {
   f2?: number | string
   f3?: number | string
+  /** 当日成交额（美元）。只服务「个股热度」排序，缺失不影响估值 */
+  f6?: number | string
   f12?: string
   f13?: number
   f14?: string
@@ -38,7 +40,7 @@ export function normalizeEastmoney(raw: EmResponse): Quote[] {
   const rows = raw.data?.diff ?? []
   const out: Quote[] = []
   for (const r of rows) {
-    const { f2, f3, f12, f14, f18 } = r
+    const { f2, f3, f6, f12, f14, f18 } = r
     if (!f12 || typeof f2 !== 'number' || typeof f18 !== 'number' || typeof f3 !== 'number') continue
     if (!Number.isFinite(f2) || !Number.isFinite(f18) || !Number.isFinite(f3)) continue
     out.push({
@@ -49,6 +51,8 @@ export function normalizeEastmoney(raw: EmResponse): Quote[] {
       price: f2 / 1000,
       prevClose: f18 / 1000,
       pct: f3 / 100,
+      // f6 已经是美元且不再缩放；缺失/非数字就不写这个键（排序会退回组合权重）
+      ...(typeof f6 === 'number' && Number.isFinite(f6) && f6 > 0 ? { turnover: f6 } : {}),
       tsMs: Date.now(),
       precision: 2,
       sourceId: 'eastmoney',

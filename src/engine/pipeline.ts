@@ -109,7 +109,15 @@ export interface FundEstimate {
   /** 让界面能说"含港股 N 只，已排除" */
   excluded: { hk: number }
   missing: string[]
-  breakdown: Array<{ symbol: string; name: string; weight: number; pct: number; contribution: number }>
+  breakdown: Array<{
+    symbol: string
+    name: string
+    weight: number
+    pct: number
+    contribution: number
+    /** 当日成交额（美元）。只给卡片「个股热度」排序用；行情源没给就不出现这个键 */
+    turnover?: number
+  }>
   /**
    * 夜盘（盘后）估值的第二组数字。**可选**：没有盘后行情、覆盖率不足 0.3、
    * 或当前是盘中，这个键就根本不出现——界面据此决定要不要多渲染一行，
@@ -268,7 +276,17 @@ export function buildEstimate(input: BuildInput): FundEstimate {
     sessionsSinceNav: priorSessions.length,
     excluded: { hk: input.excludedHk ?? 0 },
     missing,
-    breakdown: result.breakdown,
+    /**
+     * 成交额是「个股热度」的唯一来源。它跟涨跌一样是 symbol 级数据（同一只票被几只
+     * 基金持有时数值相同），所以直接按 symbol 从行情里回填，不参与任何加权。
+     * 行情源没给（CNBC / 新浪）时保持缺键——前端据此退回按组合权重排序。
+     */
+    breakdown: result.breakdown.map((b) => {
+      const turnover = quotes.get(b.symbol)?.turnover
+      return turnover !== undefined && Number.isFinite(turnover) && turnover > 0
+        ? { ...b, turnover }
+        : b
+    }),
     ...(preMarket && input.phase === 'pre'
       ? {
           preMarket: {

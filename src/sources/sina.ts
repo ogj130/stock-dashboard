@@ -185,6 +185,9 @@ export function parseSina(raw: string, nowMs: number = Date.now()): SinaQuote[] 
     const afterHours = afterHoursOf(f, price, nowMs)
     out.push({
       symbol: m[1]!.toUpperCase(),
+      // [0] 是中文名（苹果/英伟达）。新浪的成交额字段位置不稳，刻意不取——
+      // 「热度」排序宁可缺数据退回组合权重，也不要拿错字段排出一个看着正常的顺序
+      ...(f[0]?.trim() ? { name: f[0].trim() } : {}),
       price,
       prevClose,
       pct,

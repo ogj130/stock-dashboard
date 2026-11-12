@@ -277,6 +277,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window.orderOut(nil)
     }
 
+    /// 打开快讯链接。
+    ///
+    /// 只放行 http/https：消息体来自网页，别让它借 bridge 去开 file:// 或自定义 scheme。
+    /// 打开后把卡片收起来——它是置顶窗口，不收就会一直盖在文章上面。
+    private func openExternalLink(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return }
+        NSWorkspace.shared.open(url)
+        window.orderOut(nil)
+    }
+
     @objc private func reloadNow() {
         loadApp()
     }
@@ -327,7 +340,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "card", let body = message.body as? String else { return }
-        if body == "open" { openFullPage() }
+        if body == "open" {
+            openFullPage()
+        } else if body.hasPrefix("open-url:") {
+            openExternalLink(String(body.dropFirst("open-url:".count)))
+        }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
