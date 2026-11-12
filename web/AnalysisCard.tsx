@@ -8,6 +8,7 @@ import {
   type AnalysisResult,
   type AnalysisStockInput,
   type AnalysisTotals,
+  type MarketContextInput,
   sessionClock,
 } from './analysis'
 
@@ -166,9 +167,17 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
         // 快讯失败不影响分析：只是少一个上下文
         const news = await getJson<NewsResponse>(`/api/news?limit=${NEWS_LIMIT}`).catch(() => null)
         const clock = sessionClock(phase, started)
+        const symbols = stocks.map((stock) => stock.symbol).slice(0, 12).join(',')
+        const context = await getJson<MarketContextInput>(
+          `/api/context?phase=${phase}&symbols=${encodeURIComponent(symbols)}`,
+        ).catch(() => null)
+        const futureText =
+          context !== null && context.futures.length > 0
+            ? ` · ${context.futures.map((item) => `${item.symbol} ${item.pct > 0 ? '+' : ''}${item.pct}%`).join(' / ')}`
+            : ''
         patchStep('snapshot', {
           state: 'done',
-          detail: `${funds.length} 只基金 · ${stocks.length} 只个股 · ${news?.items.length ?? 0} 条快讯 · ${clock.et}`,
+          detail: `${funds.length} 只基金 · ${stocks.length} 只个股 · ${news?.items.length ?? 0} 条快讯 · ${clock.et}${futureText}`,
         })
         const snapshot = buildAnalysisSnapshot({
           phase,
@@ -179,6 +188,7 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
           funds,
           stocks,
           news: news?.items ?? [],
+          context,
         })
 
         setSteps((prev) => [

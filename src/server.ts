@@ -9,6 +9,7 @@ import { registerPortfolioRoutes } from './routes/portfolio'
 import { registerAccuracyRoutes } from './routes/accuracy'
 import { registerNewsRoutes } from './routes/news'
 import { registerAiRoutes } from './routes/ai'
+import { registerContextRoutes } from './routes/context'
 import { QuoteRegistry } from './sources/registry'
 import { EastmoneySource, probeMarket } from './sources/eastmoney'
 import { MarketMap } from './sources/marketMap'
@@ -49,6 +50,8 @@ registerAccuracyRoutes(app, db)
 registerNewsRoutes(app)
 // AI 分析：配置存数据目录下的 ai.json（0600），没有配置时端点是 400 而不是报错
 registerAiRoutes(app, dbPath)
+// 期货/板块 ETF/个股盘前：只给 AI 复盘按需取，不参与 5 秒轮询
+registerContextRoutes(app)
 
 /**
  * 市场码来自持仓报文的 NEWTEXCH（免费、准确），由 ensureMarkets 提前灌进这张表。

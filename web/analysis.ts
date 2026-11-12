@@ -48,6 +48,12 @@ export interface AnalysisClock {
   note: string
 }
 
+export interface MarketContextInput {
+  futures: Array<{ symbol: string; name: string; price: number; pct: number; asOf: string }>
+  etfs: Array<{ symbol: string; name: string; pct: number; asOf: string }>
+  premarketStocks: Array<{ symbol: string; pct: number; price: number }>
+}
+
 export interface AnalysisSnapshot {
   phase: AnalysisPhase
   atMs: number
@@ -61,6 +67,8 @@ export interface AnalysisSnapshot {
   indices: Array<{ name: string; pct: number; asOf: string }>
   /** 按跟踪指数聚合的板块权重，供模型把「半导体/纳指」类新闻挂到持仓上 */
   boards: Array<{ name: string; weightPct: number }>
+  /** 期货 / 板块 ETF / 个股盘前：当天实时的市场上下文 */
+  context: MarketContextInput | null
   /** 预先算好的组合分析量：贡献 pp、集中度、覆盖率、汇率影响 */
   analytics: {
     topContributors: Array<{ symbol: string; name: string; weightPct: number; pct: number; contributionPp: number }>
@@ -103,6 +111,7 @@ export interface BuildSnapshotInput {
   funds: readonly AnalysisFundInput[]
   stocks: readonly AnalysisStockInput[]
   news: readonly AnalysisNewsInput[]
+  context?: MarketContextInput | null
 }
 
 /** 纯函数，便于单测；顺序与界面一致（服务端不重排） */
@@ -173,6 +182,7 @@ export function buildAnalysisSnapshot(input: BuildSnapshotInput): AnalysisSnapsh
         : { pair: input.fx.pair, rate: round(input.fx.rate, 4), pct: round(input.fx.pct, 3) },
     indices: input.indices.map((item) => ({ name: item.name, pct: round(item.pct), asOf })),
     boards,
+    context: input.context ?? null,
     analytics: {
       topContributors,
       topDetractors,

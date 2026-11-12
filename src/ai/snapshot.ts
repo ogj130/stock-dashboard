@@ -59,6 +59,12 @@ export interface AnalysisSnapshot {
   indices: Array<{ name: string; pct: number; asOf: string }>
   /** 按跟踪指数聚合的板块权重 */
   boards: Array<{ name: string; weightPct: number }>
+  /** 期货 / 板块 ETF / 个股盘前（当天实时上下文） */
+  context: {
+    futures: Array<{ symbol: string; name: string; price: number; pct: number; asOf: string }>
+    etfs: Array<{ symbol: string; name: string; pct: number; asOf: string }>
+    premarketStocks: Array<{ symbol: string; pct: number; price: number }>
+  } | null
   /** 预先算好的组合分析量（贡献 pp、集中度、覆盖、汇率） */
   analytics: {
     topContributors: Array<{ symbol: string; name: string; weightPct: number; pct: number; contributionPp: number }>
@@ -82,6 +88,12 @@ function num(v: unknown, fallback = 0): number {
 
 function str(v: unknown, max: number): string {
   return isStr(v) ? v.trim().slice(0, max) : ''
+}
+
+function rowList(value: unknown, limit: number): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null).slice(0, limit)
+    : []
 }
 
 export interface ParseResult {
@@ -176,12 +188,34 @@ export function parseSnapshot(input: unknown): ParseResult {
     .map((item) => ({ name: str(item.name, 20), weightPct: num(item.weightPct) }))
     .filter((item) => item.name !== '')
 
+  let context: AnalysisSnapshot['context'] = null
+  if (typeof raw.context === 'object' && raw.context !== null) {
+    const ctx = raw.context as Record<string, unknown>
+    const futures = rowList(ctx.futures, 4)
+      .map((row) => ({
+        symbol: str(row.symbol, 10),
+        name: str(row.name, 20),
+        price: num(row.price),
+        pct: num(row.pct),
+        asOf: str(row.asOf, 20) || '实时',
+      }))
+      .filter((row) => row.symbol !== '')
+    const etfs = rowList(ctx.etfs, 6)
+      .map((row) => ({
+        symbol: str(row.symbol, 10),
+        name: str(row.name, 20),
+        pct: num(row.pct),
+        asOf: str(row.asOf, 20) || '未知',
+      }))
+      .filter((row) => row.symbol !== '')
+    const premarketStocks = rowList(ctx.premarketStocks, 12)
+      .map((row) => ({ symbol: str(row.symbol, 10), pct: num(row.pct), price: num(row.price) }))
+      .filter((row) => row.symbol !== '')
+    context = { futures, etfs, premarketStocks }
+  }
+
   const analyticsRaw =
     typeof raw.analytics === 'object' && raw.analytics !== null ? (raw.analytics as Record<string, unknown>) : {}
-  const rowList = (value: unknown, limit: number): Array<Record<string, unknown>> =>
-    Array.isArray(value)
-      ? value.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null).slice(0, limit)
-      : []
   const contributionRows = (value: unknown) =>
     rowList(value, 5)
       .map((row) => ({
@@ -239,6 +273,7 @@ export function parseSnapshot(input: unknown): ParseResult {
       fx,
       indices,
       boards,
+      context,
       analytics,
       funds,
       stocks,
