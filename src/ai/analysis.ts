@@ -124,6 +124,8 @@ export interface ChatOptions {
   /** 兼容端点不一定支持 response_format，第一次 400 后会自动去掉重试 */
   jsonMode?: boolean
   timeoutMs?: number
+  /** 输出被截断（finish_reason=length）时是否自动翻倍重试；ping 这类小请求可关掉 */
+  retryOnTruncation?: boolean
   fetchFn?: typeof fetch
 }
 
@@ -133,6 +135,24 @@ export interface ChatOptions {
  * 只接受 `choices[0].message.content` 为字符串（或内容分段数组）的常规形状；
  * 超时用 AbortSignal.timeout，绝不无限挂起——分析卡可以转圈，服务不能被拖住。
  */
+const MAX_OUTPUT_TOKENS = 8192
+
+function extractContent(payload: unknown): string {
+  const choices = (payload as { choices?: Array<{ message?: { content?: unknown } }> } | null)?.choices
+  const content = choices?.[0]?.message?.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((part) =>
+        typeof part === 'object' && part !== null && typeof (part as { text?: unknown }).text === 'string'
+          ? (part as { text: string }).text
+          : '',
+      )
+      .join('')
+  }
+  return ''
+}
+
 export async function chatCompletion(
   config: AiConfig,
   messages: ChatMessage[],
@@ -140,45 +160,68 @@ export async function chatCompletion(
 ): Promise<string> {
   const fetchFn = options.fetchFn ?? fetch
   const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`
-  const baseBody: Record<string, unknown> = {
-    model: config.model,
-    messages,
-    temperature: 0.2,
-    max_tokens: options.maxTokens ?? 1000,
-  }
 
-  async function call(body: Record<string, unknown>): Promise<Response> {
-    return fetchFn(url, {
+  async function call(maxTokens: number): Promise<{ content: string; finish: string }> {
+    const baseBody: Record<string, unknown> = {
+      model: config.model,
+      messages,
+      temperature: 0.2,
+      max_tokens: maxTokens,
+    }
+    const withJsonMode = options.jsonMode === false ? baseBody : { ...baseBody, response_format: { type: 'json_object' } }
+
+    let res = await fetchFn(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withJsonMode),
       signal: AbortSignal.timeout(options.timeoutMs ?? 45_000),
     })
+    if (!res.ok && res.status === 400 && options.jsonMode !== false) {
+      // 端点不认 response_format：去掉再来一次。很多自建服务就是这样。
+      res = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify(baseBody),
+        signal: AbortSignal.timeout(options.timeoutMs ?? 45_000),
+      })
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`AI 接口 HTTP ${res.status}${detail === '' ? '' : `：${detail.slice(0, 160)}`}`)
+    }
+    const payload = (await res.json()) as {
+      choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>
+    }
+    return {
+      content: extractContent(payload),
+      finish: payload.choices?.[0]?.finish_reason ?? '',
+    }
   }
 
-  let res = await call(options.jsonMode === false ? baseBody : { ...baseBody, response_format: { type: 'json_object' } })
-  if (!res.ok && res.status === 400 && options.jsonMode !== false) {
-    // 端点不认 response_format：去掉再来一次。很多自建服务就是这样。
-    res = await call(baseBody)
+  const maxTokens = options.maxTokens ?? 4096
+  const first = await call(maxTokens)
+  /**
+   * 推理型模型（deepseek-v4.1-flash 这类）会先把 token 花在 reasoning_content 上：
+   * max_tokens 只给 1100 时，思考正好把它吃满，`content` 是空串、finish_reason=length。
+   * 这不是「模型不听话」，是预算不够。翻倍重试一次，仍不行再报明确的错。
+   */
+  const truncated = first.finish === 'length' || first.content.trim() === ''
+  if (options.retryOnTruncation !== false && truncated && maxTokens < MAX_OUTPUT_TOKENS) {
+    const second = await call(Math.min(MAX_OUTPUT_TOKENS, maxTokens * 2))
+    if (second.content.trim() !== '' && second.finish !== 'length') return second.content
+    if (second.content.trim() === '') {
+      throw new Error('模型只输出了思考过程（输出上限被推理用尽）；换一个非推理模型再试')
+    }
+    return second.content
   }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`AI 接口 HTTP ${res.status}${detail === '' ? '' : `：${detail.slice(0, 160)}`}`)
+  if (first.content.trim() === '') {
+    throw new Error('模型没有返回正文（可能把输出上限都用在思考上）；换一个非推理模型再试')
   }
-  const payload = (await res.json()) as {
-    choices?: Array<{ message?: { content?: unknown } }>
-  }
-  const content = payload.choices?.[0]?.message?.content
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => (typeof part === 'object' && part !== null && typeof (part as { text?: unknown }).text === 'string'
-        ? (part as { text: string }).text
-        : ''))
-      .join('')
-  }
-  throw new Error('AI 接口没有返回 content')
+  return first.content
 }

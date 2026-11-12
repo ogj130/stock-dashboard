@@ -115,7 +115,7 @@ export function registerAiRoutes(app: FastifyInstance, dbPath: string, deps: AiR
       await chatCompletion(
         config,
         [{ role: 'user', content: '只回复 OK' }],
-        { fetchFn, maxTokens: 8, jsonMode: false, timeoutMs: 15_000 },
+        { fetchFn, maxTokens: 8, jsonMode: false, retryOnTruncation: false, timeoutMs: 15_000 },
       )
       return { ok: true, model: config.model, ms: now() - started }
     } catch (err) {
@@ -146,7 +146,7 @@ export function registerAiRoutes(app: FastifyInstance, dbPath: string, deps: AiR
       try {
         const text = await chatCompletion(config, buildMessages(snapshot), {
           fetchFn,
-          maxTokens: 1100,
+          maxTokens: 4096,
           timeoutMs: 60_000,
         })
         const analysis = parseAnalysis(text)

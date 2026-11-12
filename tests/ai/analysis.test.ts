@@ -140,3 +140,70 @@ describe('chatCompletion · 兼容端点', () => {
     expect(text).toBe('你好')
   })
 })
+
+describe('chatCompletion · 推理型模型的输出预算', () => {
+  it('finish_reason=length 且 content 为空 → 翻倍 token 重试一次', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      bodies.push(body)
+      // 第一次：思考把 4096 用完，content 空
+      if (bodies.length === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: '' }, finish_reason: 'length' }] }),
+          text: async () => '',
+        } as unknown as Response
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: '{"headline":"ok"}' }, finish_reason: 'stop' }] }),
+        text: async () => '',
+      } as unknown as Response
+    })
+    const text = await chatCompletion(
+      { baseUrl: 'https://x/v1', model: 'm', apiKey: 'k' },
+      [{ role: 'user', content: 'hi' }],
+      { fetchFn: fetchFn as unknown as typeof fetch, maxTokens: 4096 },
+    )
+    expect(text).toBe('{"headline":"ok"}')
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0]!.max_tokens).toBe(4096)
+    expect(bodies[1]!.max_tokens).toBe(8192)
+  })
+
+  it('两次都被思考吃满 → 明确报「只输出了思考过程」', async () => {
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: '' }, finish_reason: 'length' }] }),
+      text: async () => '',
+    }) as unknown as Response)
+    await expect(
+      chatCompletion(
+        { baseUrl: 'https://x/v1', model: 'm', apiKey: 'k' },
+        [{ role: 'user', content: 'hi' }],
+        { fetchFn: fetchFn as unknown as typeof fetch, maxTokens: 4096 },
+      ),
+    ).rejects.toThrow(/思考/)
+  })
+
+  it('ping 这类小请求可以关掉重试（只打一次）', async () => {
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: '' }, finish_reason: 'length' }] }),
+      text: async () => '',
+    }) as unknown as Response)
+    await expect(
+      chatCompletion(
+        { baseUrl: 'https://x/v1', model: 'm', apiKey: 'k' },
+        [{ role: 'user', content: 'ping' }],
+        { fetchFn: fetchFn as unknown as typeof fetch, maxTokens: 8, retryOnTruncation: false },
+      ),
+    ).rejects.toThrow(/没有返回正文|思考/)
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+})
