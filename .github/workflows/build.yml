@@ -1,0 +1,125 @@
+name: build
+
+# 什么时候跑：
+#   · push 到 main / 打 v* 标签：测试 + 打两个平台的包（标签还会建 Release）
+#   · PR：只跑测试，不浪费 macOS 分钟
+#   · 手动：workflow_dispatch，用来出包不建 Release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 打包时塞进安装包的那份 node。和 Windows 绿色版保持同一个版本，
+  # 两个平台的行为（node:sqlite、fetch、AbortSignal.timeout）必须一致。
+  NODE_VER: v24.18.0
+
+jobs:
+  test:
+    name: test (typecheck + vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本从 package.json 的 packageManager 字段读，不在这里再写一遍
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      # 测试里有两条打真实外网的用例，默认 skip（vitest 里按环境变量跳过）
+      - run: pnpm test
+
+  macos-arm64-dmg:
+    name: macOS arm64 DMG
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: macos-14          # Apple Silicon；swiftc 打出来就是 arm64
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # 脚本自己完成：前端构建 → server bundle → 下载 arm64 node → 组装 .app
+      # → 编菜单栏卡片 → 用包里的 node 起一次服务做冒烟 → 组装 DMG
+      - run: ./tools/mac/build-dmg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-dmg
+          path: dist-mac/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-x64-zip:
+    name: Windows x64 zip
+    needs: test
+    if: github.event_name != 'pull_request'
+    # 在 Linux 上打 Windows 包：产物是「node.exe + bundle + 前端」的纯文件树，
+    # 跟打包机操作系统无关；比在 windows-latest 上装 Git Bash 的 curl/zip/python 更稳。
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 打包工具依赖
+        run: sudo apt-get update && sudo apt-get install -y zip unzip
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: bash tools/win/build-win.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-zip
+          path: dist-win/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos-arm64-dmg, windows-x64-zip]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
