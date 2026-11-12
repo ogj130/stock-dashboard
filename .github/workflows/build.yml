@@ -50,7 +50,10 @@ jobs:
     name: macOS arm64 DMG
     needs: test
     if: github.event_name != 'pull_request'
-    runs-on: macos-14          # Apple Silicon；swiftc 打出来就是 arm64
+    # macos-13 是 Intel 运行器；产物仍是 arm64（node 下 arm64 包、swiftc 用
+    # -target arm64 交叉编译）。不用 macos-14 是因为当前账号不支持 arm64 运行器
+    # （报 "configuration 'macos-14-arm64-us-default' is not supported"）。
+    runs-on: macos-13
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
