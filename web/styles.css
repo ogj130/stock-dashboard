@@ -1114,7 +1114,7 @@ body {
 
 .ai-fields {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1.2fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
   gap: 8px;
   margin-top: 8px;
 }
@@ -1128,7 +1128,9 @@ body {
   color: var(--muted);
 }
 
-.ai-fields input {
+.ai-fields input,
+.ai-profile-row select,
+.ai-model-pick select {
   box-sizing: border-box;
   width: 100%;
   padding: 5px 8px;
@@ -1140,7 +1142,9 @@ body {
   font-size: 11px;
 }
 
-.ai-fields input:focus-visible {
+.ai-fields input:focus-visible,
+.ai-profile-row select:focus-visible,
+.ai-model-pick select:focus-visible {
   outline: 2px solid rgba(120, 160, 255, 0.6);
   outline-offset: 1px;
 }
@@ -1389,4 +1393,40 @@ body {
   .ai-progress-bar span {
     animation: none;
   }
+}
+
+
+/* 配置档案选择：下拉 + 新建 + 删除，一行放不下就折行 */
+.ai-profile-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-profile-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+  flex: 1 1 220px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-model-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-profile-row select,
+.ai-model-pick select {
+  color-scheme: dark;
+  padding: 5px 8px;
+  cursor: pointer;
 }

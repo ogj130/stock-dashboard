@@ -1,4 +1,4 @@
-import type { AiConfig } from './config'
+import type { AiProfile } from './config'
 import type { AnalysisSnapshot } from './snapshot'
 
 /**
@@ -154,7 +154,7 @@ function extractContent(payload: unknown): string {
 }
 
 export async function chatCompletion(
-  config: AiConfig,
+  config: Pick<AiProfile, 'baseUrl' | 'model' | 'apiKey'>,
   messages: ChatMessage[],
   options: ChatOptions = {},
 ): Promise<string> {
@@ -224,4 +224,47 @@ export async function chatCompletion(
     throw new Error('模型没有返回正文（可能把输出上限都用在思考上）；换一个非推理模型再试')
   }
   return first.content
+}
+
+/**
+ * 拉取端点声明的模型列表（GET /models，OpenAI 兼容）。
+ *
+ * 不同实现返回的形状不一样：标准是 `{data:[{id,...}]}`，也有直接给数组或字符串的。
+ * 这里只做一件事——尽量把 id 捞出来、去重排序；捞不到就返回空数组，
+ * 让界面提示「端点没有返回模型列表」，而不是报一个看不懂的解析错误。
+ */
+export async function listModels(
+  config: Pick<AiProfile, 'baseUrl' | 'apiKey'>,
+  options: { fetchFn?: typeof fetch; timeoutMs?: number } = {},
+): Promise<string[]> {
+  const fetchFn = options.fetchFn ?? fetch
+  const url = `${config.baseUrl.replace(/\/+$/, '')}/models`
+  const headers: Record<string, string> = {}
+  if (config.apiKey !== '') headers.authorization = `Bearer ${config.apiKey}`
+  const res = await fetchFn(url, {
+    headers,
+    signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`获取模型列表失败：HTTP ${res.status}${detail === '' ? '' : `（${detail.slice(0, 120)}）`}`)
+  }
+  const payload = (await res.json()) as unknown
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as { data?: unknown })?.data)
+      ? ((payload as { data: unknown[] }).data)
+      : []
+  const ids: string[] = []
+  for (const row of rows) {
+    if (typeof row === 'string') {
+      ids.push(row)
+      continue
+    }
+    if (typeof row === 'object' && row !== null) {
+      const id = (row as { id?: unknown }).id
+      if (typeof id === 'string') ids.push(id)
+    }
+  }
+  return [...new Set(ids.map((id) => id.trim()).filter((id) => id !== ''))].sort((a, b) => a.localeCompare(b))
 }

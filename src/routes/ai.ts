@@ -1,30 +1,43 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import {
+  activeProfile,
   defaultAiConfigPath,
   isConfigured,
   maskKey,
+  newProfileId,
   normalizeBaseUrl,
-  readAiConfig,
-  writeAiConfig,
-  type AiConfig,
+  readAiStore,
+  writeAiStore,
+  type AiProfile,
+  type AiStore,
 } from '../ai/config'
-import { DISCLAIMER, buildMessages, chatCompletion, parseAnalysis, type Analysis } from '../ai/analysis'
+import {
+  DISCLAIMER,
+  buildMessages,
+  chatCompletion,
+  listModels,
+  parseAnalysis,
+  type Analysis,
+} from '../ai/analysis'
 import { parseSnapshot } from '../ai/snapshot'
 
 /**
  * AI 分析的 HTTP 面。
  *
- * 四个端点，都在本机（或带口令的局域网）：
- *   GET  /api/ai/config   读配置（密钥只回 masked，永不回原文）
- *   PUT  /api/ai/config   写入 baseUrl / model / apiKey（写到 0600 的 ai.json）
- *   POST /api/ai/test     用 8 个 token 发一次 ping，验证端点与密钥
- *   POST /api/analysis    把界面上的快照交给模型，返回结构化解读
+ * 配置是**多档案**的：每个档案 = 名称 + Base URL + 模型 + 密钥，同一时间只有一个
+ * 「当前使用」。这样 DeepSeek / OpenAI / 自建中转可以并存，切换只改 activeId。
  *
- * 语义上的两个「故意」：
- *   · 配置与调用分离：没有配置时分析端点返回 400，前端据此整块提示去填，
- *     而不是发一个注定失败的请求；
- *   · 分析结果按 10 分钟缓存：行情 5 秒一跳，但「今天的归因」不需要跟着跳，
- *     用户可手动 refresh 强制重算。
+ *   GET    /api/ai/config          读配置（密钥只回 masked，永不回原文）
+ *   PUT    /api/ai/config          兼容旧版的扁平写入（更新当前档案）
+ *   POST   /api/ai/profiles        新建档案
+ *   PUT    /api/ai/profiles/:id    修改档案
+ *   DELETE /api/ai/profiles/:id    删除档案
+ *   PUT    /api/ai/active          切换当前档案
+ *   POST   /api/ai/models          用某个档案（或草稿端点）拉 /models 列表
+ *   POST   /api/ai/test            用 8 个 token 发一次 ping
+ *   POST   /api/analysis           用当前档案做持仓复盘（10 分钟缓存）
+ *
+ * 所有写操作都落在数据目录的 ai.json（0600）；任何配置变更都会清掉分析缓存。
  */
 export interface AiRouteDeps {
   configPath?: string
@@ -33,21 +46,34 @@ export interface AiRouteDeps {
   ttlMs?: number
 }
 
-interface PublicConfig {
+interface PublicProfile {
+  id: string
+  name: string
   baseUrl: string
   model: string
   hasKey: boolean
   maskedKey: string
+}
+
+interface PublicConfig {
+  activeId: string
+  profiles: PublicProfile[]
   configured: boolean
 }
 
-function publicConfig(config: AiConfig): PublicConfig {
+function publicConfig(store: AiStore): PublicConfig {
+  const active = activeProfile(store)
   return {
-    baseUrl: config.baseUrl,
-    model: config.model,
-    hasKey: config.apiKey !== '',
-    maskedKey: maskKey(config.apiKey),
-    configured: isConfigured(config),
+    activeId: active?.id ?? '',
+    profiles: store.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      baseUrl: profile.baseUrl,
+      model: profile.model,
+      hasKey: profile.apiKey !== '',
+      maskedKey: maskKey(profile.apiKey),
+    })),
+    configured: active !== null && isConfigured(active),
   }
 }
 
@@ -58,6 +84,13 @@ interface AnalysisPayload extends Analysis {
   disclaimer: string
 }
 
+/** 校验可选的字符串字段；返回错误文案或 null */
+function readString(value: unknown, label: string, max: number): { value?: string; error?: string } {
+  if (value === undefined) return {}
+  if (typeof value !== 'string') return { error: `${label} 必须是字符串` }
+  return { value: value.trim().slice(0, max) }
+}
+
 export function registerAiRoutes(app: FastifyInstance, dbPath: string, deps: AiRouteDeps = {}): void {
   const configPath = deps.configPath ?? defaultAiConfigPath(dbPath)
   const now = deps.now ?? Date.now
@@ -65,49 +98,202 @@ export function registerAiRoutes(app: FastifyInstance, dbPath: string, deps: AiR
   const fetchFn = deps.fetchFn
   let cache: { key: string; at: number; payload: AnalysisPayload } | null = null
 
-  app.get('/api/ai/config', async () => publicConfig(readAiConfig(configPath)))
+  function persist(store: AiStore): void {
+    writeAiStore(configPath, store)
+    cache = null
+  }
 
-  app.put<{ Body: { baseUrl?: unknown; model?: unknown; apiKey?: unknown } }>(
+  function applyPatch(profile: AiProfile, body: Record<string, unknown>): { profile?: AiProfile; error?: string } {
+    const name = readString(body.name, '名称', 40)
+    if (name.error !== undefined) return { error: name.error }
+    const model = readString(body.model, 'model', 80)
+    if (model.error !== undefined) return { error: model.error }
+    const apiKey = readString(body.apiKey, 'apiKey', 400)
+    if (apiKey.error !== undefined) return { error: apiKey.error }
+
+    let baseUrl = profile.baseUrl
+    if (body.baseUrl !== undefined) {
+      if (typeof body.baseUrl !== 'string') return { error: 'Base URL 必须是字符串' }
+      const text = body.baseUrl.trim()
+      if (text === '') {
+        baseUrl = ''
+      } else {
+        const normalized = normalizeBaseUrl(text)
+        if (normalized === null) return { error: 'Base URL 必须是 http(s):// 开头的地址' }
+        baseUrl = normalized
+      }
+    }
+
+    return {
+      profile: {
+        ...profile,
+        name: name.value !== undefined && name.value !== '' ? name.value : profile.name,
+        baseUrl,
+        model: model.value ?? profile.model,
+        apiKey: apiKey.value ?? profile.apiKey,
+      },
+    }
+  }
+
+  app.get('/api/ai/config', async () => publicConfig(readAiStore(configPath)))
+
+  // 兼容旧版：扁平写入当前档案；没有档案时建一个「默认」
+  app.put<{ Body: { baseUrl?: unknown; model?: unknown; apiKey?: unknown; name?: unknown } }>(
     '/api/ai/config',
     async (req, reply: FastifyReply) => {
-      const body = req.body ?? {}
-      const patch: Partial<AiConfig> = {}
-      if (body.baseUrl !== undefined) {
-        if (typeof body.baseUrl !== 'string') return reply.code(400).send({ error: 'baseUrl 必须是字符串' })
-        const text = body.baseUrl.trim()
-        if (text === '') {
-          patch.baseUrl = ''
-        } else {
-          const normalized = normalizeBaseUrl(text)
-          if (normalized === null) {
-            return reply.code(400).send({ error: 'Base URL 必须是 http(s):// 开头的地址' })
-          }
-          patch.baseUrl = normalized
-        }
+      const store = readAiStore(configPath)
+      const active = activeProfile(store)
+      const base: AiProfile = active ?? {
+        id: 'default',
+        name: '默认',
+        baseUrl: '',
+        model: '',
+        apiKey: '',
       }
-      if (body.model !== undefined) {
-        if (typeof body.model !== 'string') return reply.code(400).send({ error: 'model 必须是字符串' })
-        patch.model = body.model.trim()
-      }
-      if (body.apiKey !== undefined) {
-        if (typeof body.apiKey !== 'string') return reply.code(400).send({ error: 'apiKey 必须是字符串' })
-        patch.apiKey = body.apiKey.trim()
-      }
+      const patched = applyPatch(base, req.body ?? {})
+      if (patched.profile === undefined) return reply.code(400).send({ error: patched.error ?? '参数不合法' })
+      const nextProfile = patched.profile
+      const nextStore: AiStore = active
+        ? { ...store, profiles: store.profiles.map((p) => (p.id === active.id ? nextProfile : p)) }
+        : { activeId: nextProfile.id, profiles: [...store.profiles, nextProfile] }
       try {
-        writeAiConfig(configPath, patch)
+        persist(nextStore)
       } catch (err) {
         app.log.warn({ err }, 'ai config write failed')
         return reply.code(500).send({ error: '配置写入失败（检查数据目录权限）' })
       }
-      // 配置变了，缓存的分析一定过期
-      cache = null
-      return publicConfig(readAiConfig(configPath))
+      return publicConfig(nextStore)
+    },
+  )
+
+  app.post<{ Body: { name?: unknown; baseUrl?: unknown; model?: unknown; apiKey?: unknown } }>(
+    '/api/ai/profiles',
+    async (req, reply: FastifyReply) => {
+      const store = readAiStore(configPath)
+      if (store.profiles.length >= 20) {
+        return reply.code(400).send({ error: '最多保存 20 个配置' })
+      }
+      const base: AiProfile = {
+        id: newProfileId(),
+        name: `配置 ${store.profiles.length + 1}`,
+        baseUrl: '',
+        model: '',
+        apiKey: '',
+      }
+      const patched = applyPatch(base, req.body ?? {})
+      if (patched.profile === undefined) return reply.code(400).send({ error: patched.error ?? '参数不合法' })
+      const nextStore: AiStore = {
+        activeId: patched.profile.id,
+        profiles: [...store.profiles, patched.profile],
+      }
+      try {
+        persist(nextStore)
+      } catch (err) {
+        app.log.warn({ err }, 'ai profile write failed')
+        return reply.code(500).send({ error: '配置写入失败（检查数据目录权限）' })
+      }
+      return { ...publicConfig(nextStore), id: patched.profile.id }
+    },
+  )
+
+  app.put<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/ai/profiles/:id',
+    async (req, reply: FastifyReply) => {
+      const store = readAiStore(configPath)
+      const target = store.profiles.find((profile) => profile.id === req.params.id)
+      if (target === undefined) return reply.code(404).send({ error: '配置不存在' })
+      const patched = applyPatch(target, req.body ?? {})
+      if (patched.profile === undefined) return reply.code(400).send({ error: patched.error ?? '参数不合法' })
+      const nextStore: AiStore = {
+        ...store,
+        profiles: store.profiles.map((profile) => (profile.id === target.id ? patched.profile! : profile)),
+      }
+      try {
+        persist(nextStore)
+      } catch (err) {
+        app.log.warn({ err }, 'ai profile write failed')
+        return reply.code(500).send({ error: '配置写入失败（检查数据目录权限）' })
+      }
+      return publicConfig(nextStore)
+    },
+  )
+
+  app.delete<{ Params: { id: string } }>('/api/ai/profiles/:id', async (req, reply: FastifyReply) => {
+    const store = readAiStore(configPath)
+    if (!store.profiles.some((profile) => profile.id === req.params.id)) {
+      return reply.code(404).send({ error: '配置不存在' })
+    }
+    const profiles = store.profiles.filter((profile) => profile.id !== req.params.id)
+    const nextStore: AiStore = {
+      activeId: store.activeId === req.params.id ? (profiles[0]?.id ?? '') : store.activeId,
+      profiles,
+    }
+    try {
+      persist(nextStore)
+    } catch (err) {
+      app.log.warn({ err }, 'ai profile delete failed')
+      return reply.code(500).send({ error: '配置写入失败（检查数据目录权限）' })
+    }
+    return publicConfig(nextStore)
+  })
+
+  app.put<{ Body: { id?: unknown } }>('/api/ai/active', async (req, reply: FastifyReply) => {
+    const id = req.body?.id
+    if (typeof id !== 'string') return reply.code(400).send({ error: 'id 必须是字符串' })
+    const store = readAiStore(configPath)
+    if (!store.profiles.some((profile) => profile.id === id)) {
+      return reply.code(404).send({ error: '配置不存在' })
+    }
+    const nextStore: AiStore = { ...store, activeId: id }
+    try {
+      persist(nextStore)
+    } catch (err) {
+      app.log.warn({ err }, 'ai active switch failed')
+      return reply.code(500).send({ error: '配置写入失败（检查数据目录权限）' })
+    }
+    return publicConfig(nextStore)
+  })
+
+  /** 拉模型列表：可以用已保存档案（profileId）也可以用草稿端点（baseUrl + apiKey） */
+  app.post<{ Body: { profileId?: unknown; baseUrl?: unknown; apiKey?: unknown } }>(
+    '/api/ai/models',
+    async (req, reply: FastifyReply) => {
+      const body = req.body ?? {}
+      const store = readAiStore(configPath)
+      const draftBase = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : ''
+      /**
+       * 有草稿 Base URL 时**不**回落到当前档案的密钥：
+       * 用户很可能在新建另一家端点，拿旧的 key 去试只会返回 401，
+       * 看起来像新端点的错。只有「没给端点、按档案查」时才复用档案的密钥。
+       */
+      const profile =
+        typeof body.profileId === 'string'
+          ? store.profiles.find((item) => item.id === body.profileId)
+          : draftBase === ''
+            ? activeProfile(store)
+            : null
+
+      const baseUrl = draftBase !== '' ? normalizeBaseUrl(draftBase) : (profile?.baseUrl ?? '')
+      if (baseUrl === null || baseUrl === '') {
+        return reply.code(400).send({ error: '先填一个 http(s):// 的 Base URL' })
+      }
+      const draftKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
+      const apiKey = draftKey !== '' ? draftKey : (profile?.apiKey ?? '')
+
+      try {
+        const models = await listModels({ baseUrl, apiKey }, { fetchFn })
+        return { models, count: models.length }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '获取模型列表失败'
+        app.log.warn({ err }, 'ai models failed')
+        return reply.code(502).send({ error: message.slice(0, 200) })
+      }
     },
   )
 
   app.post('/api/ai/test', async (_req, reply) => {
-    const config = readAiConfig(configPath)
-    if (!isConfigured(config)) {
+    const config = activeProfile(readAiStore(configPath))
+    if (config === null || !isConfigured(config)) {
       return reply.code(400).send({ error: '还没有配置完整的 Base URL / 模型 / 密钥' })
     }
     const started = now()
@@ -128,8 +314,8 @@ export function registerAiRoutes(app: FastifyInstance, dbPath: string, deps: AiR
   app.post<{ Body: { snapshot?: unknown; refresh?: boolean } }>(
     '/api/analysis',
     async (req, reply) => {
-      const config = readAiConfig(configPath)
-      if (!isConfigured(config)) {
+      const config = activeProfile(readAiStore(configPath))
+      if (config === null || !isConfigured(config)) {
         return reply.code(400).send({ error: '还没有配置 AI：先填 Base URL、模型与密钥' })
       }
 
@@ -138,7 +324,7 @@ export function registerAiRoutes(app: FastifyInstance, dbPath: string, deps: AiR
         return reply.code(400).send({ error: parsed.error ?? '快照不合法' })
       }
       const snapshot = parsed.snapshot
-      const key = `${snapshot.phase}:${Math.floor(now() / ttlMs)}`
+      const key = `${config.id}:${snapshot.phase}:${Math.floor(now() / ttlMs)}`
       if (req.body?.refresh !== true && cache !== null && cache.key === key) {
         return { ...cache.payload, cached: true }
       }

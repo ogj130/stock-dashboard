@@ -125,11 +125,18 @@ export interface AnalysisResult {
   disclaimer: string
 }
 
-export interface AiConfigView {
+export interface AiProfileView {
+  id: string
+  name: string
   baseUrl: string
   model: string
   hasKey: boolean
   maskedKey: string
+}
+
+export interface AiConfigView {
+  activeId: string
+  profiles: AiProfileView[]
   configured: boolean
 }
 

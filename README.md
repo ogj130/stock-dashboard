@@ -72,9 +72,15 @@ QDII 的官方净值 **T+1/T+2** 才披露，白天看基金 App 永远显示昨
   <img src="docs/images/ai-review.jpg" alt="AI 复盘：今日归因、风险与待核对" width="720">
 </p>
 
+<p align="center">
+  <img src="docs/images/ai-profiles.jpg" alt="AI 配置：多档案切换与模型列表" width="720">
+</p>
+
 汇总卡下方有一块「AI 复盘」。点「设置」填 **Base URL / 模型 / API Key**（任何兼容 OpenAI 的
 `/chat/completions` 端点都行），或者用环境变量 `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`。
 
+- 支持保存**多个配置**（名称 / Base URL / 模型 / 密钥），下拉切换「当前使用」；
+  「获取模型列表」会打端点的 `/models`，拉到的模型可以直接选；
 - 密钥写在数据目录的 `ai.json`（0600），不落库、不进仓库，接口只回掩码；
 - 按需触发，结果缓存 10 分钟，不跟 5 秒行情一起跑，没配端点时整块只显示设置入口；
 - 推理型模型（先输出思考）也支持：默认 4096 token，遇到截断会自动翻倍重试一次；
