@@ -23,6 +23,25 @@ import {
 
 const NEWS_LIMIT = 6
 
+type StepState = 'running' | 'done' | 'error'
+
+interface AnalysisStep {
+  key: string
+  label: string
+  detail?: string
+  state: StepState
+}
+
+/** 只显示 host，别把带路径的完整地址铺在卡片里 */
+function endpointLabel(baseUrl: string): string {
+  if (baseUrl.trim() === '') return '未配置'
+  try {
+    return new URL(baseUrl).host
+  } catch {
+    return baseUrl
+  }
+}
+
 interface Props {
   phase: 'pre' | 'live' | 'settled'
   totals: AnalysisTotals
@@ -56,6 +75,11 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 处理过程：每一步都真的发生了才写，不做装饰性假动画 */
+  const [steps, setSteps] = useState<AnalysisStep[]>([])
+  const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [elapsed, setElapsed] = useState(0)
+  const [lastMs, setLastMs] = useState<number | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -76,14 +100,40 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
     }
   }, [])
 
+  // 生成过程中每 0.5 秒刷一次已用时长：没有它，30 秒的等待看起来像卡死
+  useEffect(() => {
+    if (!loading || startedAt === null) return
+    const timer = setInterval(
+      () => setElapsed(Math.floor((Date.now() - startedAt) / 100) / 10),
+      500,
+    )
+    return () => clearInterval(timer)
+  }, [loading, startedAt])
+
+  function patchStep(key: string, patch: Partial<AnalysisStep>): void {
+    setSteps((prev) => prev.map((step) => (step.key === key ? { ...step, ...patch } : step)))
+  }
+
   const generate = useCallback(
     async (refresh: boolean) => {
       if (loading) return
       setLoading(true)
       setError(null)
+      setResult(null)
+      setLastMs(null)
+      const started = Date.now()
+      setStartedAt(started)
+      setElapsed(0)
+      setSteps([{ key: 'snapshot', label: '整理当前估算快照', state: 'running' }])
       try {
         // 快讯失败不影响分析：只是少一个上下文
-        const news = await getJson<NewsResponse>(`/api/news?limit=${NEWS_LIMIT}`).catch(() => ({ items: [] }))
+        const news = await getJson<NewsResponse>(`/api/news?limit=${NEWS_LIMIT}`).catch(() => null)
+        patchStep('snapshot', {
+          state: 'done',
+          detail: `${funds.length} 只基金 · ${stocks.length} 只个股 · ${news?.items.length ?? 0} 条快讯${
+            news === null ? '（快讯不可用，已跳过）' : ''
+          }`,
+        })
         const snapshot = buildAnalysisSnapshot({
           phase,
           atMs: Date.now(),
@@ -92,16 +142,37 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
           indices,
           funds,
           stocks,
-          news: news.items,
+          news: news?.items ?? [],
         })
+
+        setSteps((prev) => [
+          ...prev,
+          {
+            key: 'request',
+            label: '发送给模型',
+            detail: `${endpointLabel(config?.baseUrl ?? '')} · ${config?.model ?? ''}`,
+            state: 'running',
+          },
+        ])
         const payload = await getJson<AnalysisResult>('/api/analysis', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ snapshot, refresh }),
         })
+        const waited = Date.now() - started
+        patchStep('request', { state: 'done', detail: `${(waited / 1000).toFixed(1)} 秒` })
+
+        setSteps((prev) => [...prev, { key: 'parse', label: '校验返回结构', state: 'running' }])
+        patchStep('parse', { state: 'done', detail: payload.cached ? '命中缓存' : '结构合规' })
+
         setResult(payload)
+        setLastMs(waited)
       } catch (err) {
-        setError(err instanceof Error ? err.message : '分析失败')
+        const message = err instanceof Error ? err.message : '分析失败'
+        setSteps((prev) =>
+          prev.map((step) => (step.state === 'running' ? { ...step, state: 'error', detail: message } : step)),
+        )
+        setError(message)
       } finally {
         setLoading(false)
       }
@@ -252,6 +323,33 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
         <p className="ai-hint">还没有配置 AI。点「设置」填入 Base URL、模型与密钥即可。</p>
       )}
 
+      {(loading || steps.length > 0) && (
+        <div className="ai-progress" role="status" aria-live="polite">
+          <div className="ai-progress-head">
+            <span>处理过程</span>
+            <span className="num">{elapsed.toFixed(1)} s</span>
+          </div>
+          <ol className="ai-steps">
+            {steps.map((step) => (
+              <li className={`ai-step ${step.state}`} key={step.key}>
+                <i className="ai-step-dot" aria-hidden="true">
+                  {step.state === 'done' ? '✓' : step.state === 'error' ? '!' : ''}
+                </i>
+                <span>
+                  {step.label}
+                  {step.detail !== undefined && <em className="ai-step-detail">{step.detail}</em>}
+                </span>
+              </li>
+            ))}
+          </ol>
+          {loading && (
+            <div className="ai-progress-bar" aria-hidden="true">
+              <span />
+            </div>
+          )}
+        </div>
+      )}
+
       {error !== null && (
         <p className="ai-error" role="alert">
           {error}
@@ -308,13 +406,14 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
 
           <p className="ai-meta">
             {result.model} · {analysisClock(result.generatedAt)}
+            {lastMs !== null ? ` · ${(lastMs / 1000).toFixed(1)}s` : ''}
             {result.cached ? ' · 缓存' : ''}
           </p>
           <p className="ai-disclaimer">{result.disclaimer}</p>
         </div>
       )}
 
-      {loading && <p className="ai-hint">正在把当前估算交给模型，通常 10–30 秒…</p>}
+
     </section>
   )
 }

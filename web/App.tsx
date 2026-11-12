@@ -477,6 +477,8 @@ export default function App() {
   return (
     <>
       <div className="page">
+        <div className="layout">
+          <div className="col col-main">
         <header className="glass card summary">
           <div className="label">
             账户资产
@@ -590,12 +592,52 @@ export default function App() {
           />
         )}
 
+        <form className="glass card entry" onSubmit={(e) => void addFund(e)}>
+          <div className="entry-fields">
+            <input
+              className="field code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="代码"
+              inputMode="numeric"
+              autoComplete="off"
+              aria-label="基金代码"
+              required
+            />
+            <input
+              className="field"
+              value={marketValue}
+              onChange={(e) => setMarketValue(e.target.value)}
+              placeholder="市值 ¥"
+              inputMode="decimal"
+              autoComplete="off"
+              aria-label="持有市值"
+              required
+            />
+            <input
+              className="field"
+              value={profit}
+              onChange={(e) => setProfit(e.target.value)}
+              placeholder="收益 ¥"
+              inputMode="decimal"
+              autoComplete="off"
+              aria-label="持有收益（可为负）"
+            />
+            <button type="submit" className="submit" disabled={busy}>
+              {busy ? '…' : '录入'}
+            </button>
+          </div>
+        </form>
+
         {error && (
           <div className="glass card error" role="alert">
             {error}
           </div>
         )}
 
+          </div>
+
+          <div className="col col-side">
         <div className="tabs" role="group" aria-label="按关联板块筛选">
           {tabs.map((t) => (
             <button
@@ -765,42 +807,8 @@ export default function App() {
           })}
         </section>
 
-        <form className="glass card entry" onSubmit={(e) => void addFund(e)}>
-          <div className="entry-fields">
-            <input
-              className="field code"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="代码"
-              inputMode="numeric"
-              autoComplete="off"
-              aria-label="基金代码"
-              required
-            />
-            <input
-              className="field"
-              value={marketValue}
-              onChange={(e) => setMarketValue(e.target.value)}
-              placeholder="市值 ¥"
-              inputMode="decimal"
-              autoComplete="off"
-              aria-label="持有市值"
-              required
-            />
-            <input
-              className="field"
-              value={profit}
-              onChange={(e) => setProfit(e.target.value)}
-              placeholder="收益 ¥"
-              inputMode="decimal"
-              autoComplete="off"
-              aria-label="持有收益（可为负）"
-            />
-            <button type="submit" className="submit" disabled={busy}>
-              {busy ? '…' : '录入'}
-            </button>
           </div>
-        </form>
+        </div>
       </div>
 
       {marketIndices.length > 0 && (

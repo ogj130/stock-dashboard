@@ -34,13 +34,39 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+ * 宽屏用两栏：左边「汇总 + 曲线 + AI」，右边「基金列表 + 录入」。
+ * 手机（<980px）保持单列，顺序与原来一致；两栏不是把内容拉宽，而是把
+ * 纵向的滚动拆成两条，宽屏上不用一路滚到底才能看到录入框。
+ */
 .page {
-  max-width: 560px;
+  max-width: 1240px;
   margin: 0 auto;
   /* 底部指数条是 fixed 的：这里必须让出它的高度（+ 刘海屏安全区），否则最后一行永远压在条子下面 */
   padding: 24px 16px calc(72px + env(safe-area-inset-bottom));
+}
+
+.layout {
   display: grid;
   gap: 14px;
+}
+
+.col {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  min-width: 0;
+}
+
+@media (min-width: 980px) {
+  .page {
+    padding: 28px 28px calc(72px + env(safe-area-inset-bottom));
+  }
+
+  .layout {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    align-items: start;
+  }
 }
 
 .glass {
@@ -1235,5 +1261,132 @@ body {
   .ai-fields,
   .ai-cols {
     grid-template-columns: 1fr;
+  }
+}
+
+
+/* ---------- AI 处理过程 ---------- */
+
+.ai-progress {
+  margin-top: 10px;
+  padding: 10px 10px 8px;
+  border: 1px solid rgba(120, 160, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(88, 130, 255, 0.06);
+}
+
+.ai-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ai-steps {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.ai-step-dot {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border: 1px solid var(--stroke);
+  border-radius: 50%;
+  font-size: 8px;
+  font-style: normal;
+  line-height: 1;
+}
+
+.ai-step.running {
+  color: var(--text);
+}
+
+.ai-step.running .ai-step-dot {
+  border-color: rgba(120, 160, 255, 0.7);
+  box-shadow: 0 0 0 3px rgba(88, 130, 255, 0.12);
+  animation: ai-pulse 1.2s ease-in-out infinite;
+}
+
+.ai-step.done {
+  color: var(--text);
+}
+
+.ai-step.done .ai-step-dot {
+  color: #7ee2a8;
+  border-color: rgba(126, 226, 168, 0.45);
+  background: rgba(126, 226, 168, 0.12);
+}
+
+.ai-step.error {
+  color: var(--warn);
+}
+
+.ai-step.error .ai-step-dot {
+  color: var(--warn);
+  border-color: rgba(245, 181, 68, 0.55);
+  background: rgba(245, 181, 68, 0.12);
+}
+
+.ai-step-detail {
+  margin-left: 6px;
+  font-size: 10px;
+  font-style: normal;
+  color: var(--muted);
+}
+
+.ai-progress-bar {
+  margin-top: 8px;
+  height: 2px;
+  border-radius: 1px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ai-progress-bar span {
+  display: block;
+  width: 32%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, #7aa2ff, transparent);
+  animation: ai-slide 1.2s linear infinite;
+}
+
+@keyframes ai-slide {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(420%);
+  }
+}
+
+@keyframes ai-pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* 系统开了「减弱动态效果」就不动：进度靠文字与勾，不靠动画 */
+@media (prefers-reduced-motion: reduce) {
+  .ai-step.running .ai-step-dot,
+  .ai-progress-bar span {
+    animation: none;
   }
 }
