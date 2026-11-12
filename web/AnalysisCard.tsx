@@ -8,6 +8,7 @@ import {
   type AnalysisResult,
   type AnalysisStockInput,
   type AnalysisTotals,
+  sessionClock,
 } from './analysis'
 
 /**
@@ -164,11 +165,10 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
       try {
         // 快讯失败不影响分析：只是少一个上下文
         const news = await getJson<NewsResponse>(`/api/news?limit=${NEWS_LIMIT}`).catch(() => null)
+        const clock = sessionClock(phase, started)
         patchStep('snapshot', {
           state: 'done',
-          detail: `${funds.length} 只基金 · ${stocks.length} 只个股 · ${news?.items.length ?? 0} 条快讯${
-            news === null ? '（快讯不可用，已跳过）' : ''
-          }`,
+          detail: `${funds.length} 只基金 · ${stocks.length} 只个股 · ${news?.items.length ?? 0} 条快讯 · ${clock.et}`,
         })
         const snapshot = buildAnalysisSnapshot({
           phase,
@@ -577,6 +577,18 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
                 <div className="ai-driver" key={`${driver.label}-${driver.detail}`}>
                   <span>{driver.label}</span>
                   <p>{driver.detail}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {result.events.length > 0 && (
+            <div className="ai-events">
+              <h3>事件与持仓</h3>
+              {result.events.map((event) => (
+                <div className="ai-event" key={`${event.title}-${event.impact}`}>
+                  <span>{event.title}</span>
+                  <p>{event.impact}</p>
                 </div>
               ))}
             </div>

@@ -1430,3 +1430,36 @@ body {
   padding: 5px 8px;
   cursor: pointer;
 }
+
+/* 事件 → 持仓：标题用正文色，影响用次要色，和「归因」卡片区分开 */
+.ai-events {
+  margin-top: 10px;
+}
+
+.ai-events h3 {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ai-event {
+  padding: 6px 8px;
+  border: 1px solid rgba(120, 160, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(88, 130, 255, 0.05);
+  margin-bottom: 6px;
+}
+
+.ai-event span {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.ai-event p {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}

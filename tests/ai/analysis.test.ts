@@ -3,15 +3,22 @@ import { buildMessages, chatCompletion, parseAnalysis } from '../../src/ai/analy
 import type { AnalysisSnapshot } from '../../src/ai/snapshot'
 
 const snapshot: AnalysisSnapshot = {
-  phase: 'live',
+  phase: 'pre',
   atMs: 1,
+  clock: {
+    local: '2026-11-12 20:31',
+    et: '2026-11-12 07:31 ET',
+    session: '美股盘前（美东 04:00–09:30）',
+    note: 'indices 与 stocks 的 asOf 是「上一交易日收盘」，代表上一场常规时段；不要把它们的涨跌说成今天盘前。',
+  },
   totalValue: 100_000,
   totalAmount: 2_000,
   totalAmountPct: 2,
   totalHoldingProfit: 10_000,
   totalHoldingPct: 11,
   fx: { pair: 'USD/CNY', rate: 6.67, pct: -0.1 },
-  indices: [{ name: '纳斯达克100', pct: 1.2 }],
+  indices: [{ name: '纳斯达克100', pct: 1.2, asOf: '上一交易日收盘' }],
+  boards: [{ name: '纳斯达克100', weightPct: 62.5 }],
   funds: [
     {
       code: '270042',
@@ -22,10 +29,12 @@ const snapshot: AnalysisSnapshot = {
       holdingProfit: 5_000,
       coveredWeight: 0.95,
       board: '纳斯达克100',
+      navDate: '2026-11-10',
+      sessionsSinceNav: 1,
     },
   ],
-  stocks: [{ symbol: 'NVDA', name: '英伟达', weightPct: 10, pct: 4.6 }],
-  news: [{ title: '半导体走强', tsMs: 1, important: true }],
+  stocks: [{ symbol: 'NVDA', name: '英伟达', weightPct: 10, pct: 4.6, asOf: '上一交易日收盘' }],
+  news: [{ title: '半导体走强', tsMs: 1, important: true, related: ['NVDA'] }],
 }
 
 const response = (content: unknown, ok = true, status = 200): Response =>
@@ -43,8 +52,12 @@ describe('buildMessages · 提示词把边界说死', () => {
     expect(system!.content).toContain('不要做新的计算')
     expect(system!.content).toContain('不做买卖建议')
     expect(system!.content).toContain('只输出 JSON')
+    expect(system!.content).toContain('asOf')
     expect(user!.content).toContain('270042')
     expect(user!.content).toContain('NVDA')
+    // 时间上下文必须真的进 prompt，不能只躺在 JSON 里
+    expect(user!.content).toContain('2026-11-12 20:31')
+    expect(user!.content).toContain('美股盘前')
   })
 })
 
@@ -63,6 +76,7 @@ describe('parseAnalysis · 只接受约定结构', () => {
       headline: '半导体带动上涨',
       summary: ['广发纳指 +2.07%'],
       drivers: [{ label: '英伟达', detail: '+4.61%' }],
+      events: [],
       risks: ['集中度高'],
       watch: ['等官方净值'],
     })
@@ -205,5 +219,25 @@ describe('chatCompletion · 推理型模型的输出预算', () => {
       ),
     ).rejects.toThrow(/没有返回正文|思考/)
     expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+describe('parseAnalysis · 事件归因', () => {
+  it('events 的 title/impact 都保留，缺一项就丢弃', () => {
+    const parsed = parseAnalysis(
+      JSON.stringify({
+        headline: 'h',
+        summary: ['s'],
+        events: [
+          { title: '费城半导体指数涨幅扩大至7%', impact: '利好 NVDA、MU，与基金估算反向' },
+          { title: '缺 impact' },
+          { impact: 'x' },
+        ],
+      }),
+    )
+    expect(parsed!.events).toEqual([
+      { title: '费城半导体指数涨幅扩大至7%', impact: '利好 NVDA、MU，与基金估算反向' },
+    ])
   })
 })

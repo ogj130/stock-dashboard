@@ -21,6 +21,10 @@ export interface SnapshotFund {
   /** 0~1；0 = 这只今天没有可用行情 */
   coveredWeight: number
   board: string | null
+  /** 官方净值日（估算锚点） */
+  navDate: string | null
+  /** 净值日之后已经补了几场 */
+  sessionsSinceNav: number
 }
 
 export interface SnapshotStock {
@@ -28,25 +32,33 @@ export interface SnapshotStock {
   name: string
   weightPct: number
   pct: number
+  /** 这批个股涨跌属于哪个时段（盘前时是「上一交易日收盘」） */
+  asOf: string
 }
 
 export interface SnapshotNews {
   title: string
   tsMs: number
   important: boolean
+  /** 标题命中的持仓 symbol（前端算好，模型不用自己猜） */
+  related: string[]
 }
 
 export interface AnalysisSnapshot {
   phase: Phase
   /** 分析请求时刻（epoch ms） */
   atMs: number
+  /** 时间上下文：北京/美东、阶段、以及「哪些数据属于上一场」 */
+  clock: { local: string; et: string; session: string; note: string }
   totalValue: number
   totalAmount: number
   totalAmountPct: number | null
   totalHoldingProfit: number
   totalHoldingPct: number | null
   fx: { pair: string; rate: number; pct: number } | null
-  indices: Array<{ name: string; pct: number }>
+  indices: Array<{ name: string; pct: number; asOf: string }>
+  /** 按跟踪指数聚合的板块权重 */
+  boards: Array<{ name: string; weightPct: number }>
   funds: SnapshotFund[]
   stocks: SnapshotStock[]
   news: SnapshotNews[]
@@ -95,6 +107,8 @@ export function parseSnapshot(input: unknown): ParseResult {
       holdingProfit: num(f.holdingProfit),
       coveredWeight: Math.min(1, Math.max(0, num(f.coveredWeight))),
       board: str(f.board, 20) || null,
+      navDate: str(f.navDate, 12) || null,
+      sessionsSinceNav: Math.max(0, Math.round(num(f.sessionsSinceNav))),
     })
   }
   if (funds.length === 0) return { error: '没有任何基金数据' }
@@ -111,6 +125,7 @@ export function parseSnapshot(input: unknown): ParseResult {
       name: str(s.name, 30) || symbol,
       weightPct: num(s.weightPct),
       pct: num(s.pct),
+      asOf: str(s.asOf, 20) || '未知',
     })
   }
 
@@ -121,13 +136,16 @@ export function parseSnapshot(input: unknown): ParseResult {
     const n = item as Record<string, unknown>
     const title = str(n.title, 120)
     if (title === '') continue
-    news.push({ title, tsMs: num(n.tsMs), important: n.important === true })
+    const related = Array.isArray(n.related)
+      ? n.related.filter((item): item is string => typeof item === 'string').slice(0, 6).map((item) => item.slice(0, 10))
+      : []
+    news.push({ title, tsMs: num(n.tsMs), important: n.important === true, related })
   }
 
   const indicesRaw = Array.isArray(raw.indices) ? raw.indices.slice(0, 6) : []
   const indices = indicesRaw
     .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
-    .map((item) => ({ name: str(item.name, 20), pct: num(item.pct) }))
+    .map((item) => ({ name: str(item.name, 20), pct: num(item.pct), asOf: str(item.asOf, 20) || '未知' }))
     .filter((item) => item.name !== '')
 
   const fxRaw = raw.fx
@@ -143,10 +161,25 @@ export function parseSnapshot(input: unknown): ParseResult {
   const totalAmountPct = isNum(raw.totalAmountPct) ? raw.totalAmountPct : null
   const totalHoldingPct = isNum(raw.totalHoldingPct) ? raw.totalHoldingPct : null
 
+  const boardsRaw = Array.isArray(raw.boards) ? raw.boards.slice(0, 8) : []
+  const boards = boardsRaw
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    .map((item) => ({ name: str(item.name, 20), weightPct: num(item.weightPct) }))
+    .filter((item) => item.name !== '')
+
+  const clockRaw = typeof raw.clock === 'object' && raw.clock !== null ? (raw.clock as Record<string, unknown>) : {}
+  const clock = {
+    local: str(clockRaw.local, 30) || '未知',
+    et: str(clockRaw.et, 30) || '未知',
+    session: str(clockRaw.session, 40) || '未知',
+    note: str(clockRaw.note, 200) || '',
+  }
+
   return {
     snapshot: {
       phase: raw.phase,
       atMs: isNum(raw.atMs) ? raw.atMs : Date.now(),
+      clock,
       totalValue: num(raw.totalValue),
       totalAmount: num(raw.totalAmount),
       totalAmountPct,
@@ -154,6 +187,7 @@ export function parseSnapshot(input: unknown): ParseResult {
       totalHoldingPct,
       fx,
       indices,
+      boards,
       funds,
       stocks,
       news,

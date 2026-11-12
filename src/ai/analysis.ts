@@ -17,10 +17,17 @@ export interface AnalysisDriver {
   detail: string
 }
 
+export interface AnalysisEvent {
+  title: string
+  impact: string
+}
+
 export interface Analysis {
   headline: string
   summary: string[]
   drivers: AnalysisDriver[]
+  /** 事件 → 持仓的关联（news[].related 已经算好命中哪些 symbol） */
+  events: AnalysisEvent[]
   risks: string[]
   watch: string[]
 }
@@ -30,18 +37,28 @@ export const DISCLAIMER = '以上是对估算数据的解读，不构成投资�
 const SYSTEM_PROMPT = [
   '你是「QDII 估值」看板里的持仓复盘助手。用户持有的是投资美股/海外市场的 QDII 基金。',
   '你只会收到一份 JSON 快照，里面的数字都由估值引擎算好。规则：',
-  '1. 只解读快照，不引入任何外部事实（不要提快照里没有的股价、新闻或宏观数据）。',
-  '2. 所有数字必须原样引用快照字段，不要做新的计算或换算；需要比较时只做定性描述。',
-  '3. 快照里 coveredWeight=0 的基金表示当天没有可用行情，必须说明“无行情”，不能当成 0%。',
-  '4. phase=pre 表示盘前、live 表示盘中、settled 表示美股已收盘待公布净值；措辞要与相位一致。',
-  '5. 数据不足时写“数据不足”，不要猜。',
-  '6. 不做买卖建议、不给目标价、不预测涨跌。',
-  '7. 只输出 JSON，不要 markdown 代码块，不要多余解释。',
+  '1. 先读 clock 与 phase：clock.local 是北京时间、clock.et 是美东时间，clock.session 是阶段。',
+  '2. 严格区分时段：indices[].asOf / stocks[].asOf 为「上一交易日收盘」时，那些涨跌属于上一场，',
+  '   绝不能写成“今天盘前涨了 X%”。今天盘前的变动只在 funds[].pct（相对昨收）里。',
+  '3. 只解读快照，不引入任何外部事实（不要提快照里没有的股价、新闻或宏观数据）。',
+  '4. 所有数字必须原样引用快照字段，不要做新的计算或换算；需要比较时只做定性描述。',
+  '   快照里的数字已按界面口径四舍五入，引用时保留两位小数即可，不要输出一长串浮点。',
+  '5. coveredWeight=0 的基金表示当天没有可用行情，必须说明“无行情”，不能当成 0%；',
+  '   coveredWeight 明显小于 1 的基金，要强调估值不完整。',
+  '6. 事件归因：news[].related 已给出标题命中的持仓 symbol。优先挑 related 非空的新闻写进 events',
+  '   （title 原样引用，impact 说明它影响哪些持仓、与哪些数字同向/反向）。',
+  '   如果 related 都为空，但新闻与 boards 里的板块/指数明显相关（例如「费城半导体指数」对应纳指/半导体持仓），',
+  '   也要写，并说明是板块层面而非个股直接命中；两者都没有才写“暂无与持仓直接相关的事件”，不要编造。',
+  '7. 个股与指数要一起用：drivers 里优先解释“哪些个股/板块带动或拖累”，并引用权重与涨跌。',
+  '8. 数据不足时写“数据不足”，不要猜。',
+  '9. 不做买卖建议、不给目标价、不预测涨跌。',
+  '10. 只输出 JSON，不要 markdown 代码块，不要多余解释。',
   '',
   'JSON 结构：',
   '{"headline":"一句话结论，40字以内",',
   ' "summary":["3-5条要点，每条40字以内"],',
   ' "drivers":[{"label":"贡献或拖累来源","detail":"引用快照数字说明，60字以内"}],',
+  ' "events":[{"title":"news 里的标题原文","impact":"影响哪些持仓 symbol、与数字同向还是反向，60字以内"}],',
   ' "risks":["1-3条风险，40字以内"],',
   ' "watch":["1-3条接下来值得核对的事，40字以内"]}',
 ].join('\n')
@@ -52,7 +69,15 @@ export function buildMessages(snapshot: AnalysisSnapshot): Array<{ role: 'system
     { role: 'system', content: SYSTEM_PROMPT },
     {
       role: 'user',
-      content: `这是当前持仓快照（JSON）：\n${JSON.stringify(snapshot, null, 2)}\n\n请按结构输出 JSON。`,
+      content: [
+        `当前时间：${snapshot.clock.local}（北京）/ ${snapshot.clock.et}；阶段：${snapshot.clock.session}。`,
+        snapshot.clock.note,
+        '',
+        '这是当前持仓快照（JSON）：',
+        JSON.stringify(snapshot, null, 2),
+        '',
+        '请按结构输出 JSON。',
+      ].join('\n'),
     },
   ]
 }
@@ -64,6 +89,21 @@ function asStringArray(value: unknown, limit: number, maxLen: number): string[] 
     .map((item) => item.trim().slice(0, maxLen))
     .filter((item) => item !== '')
     .slice(0, limit)
+}
+
+function asEvents(value: unknown, limit: number): AnalysisEvent[] {
+  if (!Array.isArray(value)) return []
+  const out: AnalysisEvent[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) continue
+    const row = item as Record<string, unknown>
+    const title = typeof row.title === 'string' ? row.title.trim().slice(0, 120) : ''
+    const impact = typeof row.impact === 'string' ? row.impact.trim().slice(0, 120) : ''
+    if (title === '' || impact === '') continue
+    out.push({ title, impact })
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 function asDrivers(value: unknown, limit: number): AnalysisDriver[] {
@@ -109,6 +149,7 @@ export function parseAnalysis(text: string): Analysis | null {
     headline,
     summary,
     drivers: asDrivers(raw.drivers, 6),
+    events: asEvents(raw.events, 5),
     risks: asStringArray(raw.risks, 5, 120),
     watch: asStringArray(raw.watch, 5, 120),
   }
