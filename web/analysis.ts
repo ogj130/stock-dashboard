@@ -235,6 +235,9 @@ export interface AnalysisResult {
   dataGaps: string[]
   confidence: { level: string; reason: string } | null
   watch: string[]
+  conclusion: string
+  verdict: { stance: string; horizon: string; reason: string } | null
+  advice: Array<{ action: string; condition: string; reason: string }>
   model: string
   generatedAt: number
   cached: boolean

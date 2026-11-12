@@ -33,6 +33,18 @@ export interface AnalysisConfidence {
   reason: string
 }
 
+export interface AnalysisVerdict {
+  stance: '偏多' | '偏空' | '中性' | '谨慎'
+  horizon: string
+  reason: string
+}
+
+export interface AnalysisAdvice {
+  action: string
+  condition: string
+  reason: string
+}
+
 export interface Analysis {
   headline: string
   summary: string[]
@@ -44,6 +56,12 @@ export interface Analysis {
   dataGaps: string[]
   confidence: AnalysisConfidence | null
   watch: string[]
+  /** 2-3 句总结：先给倾向，再给依据 */
+  conclusion: string
+  /** 倾向性判断（不是承诺） */
+  verdict: AnalysisVerdict | null
+  /** 条件化建议：action + 触发条件 + 依据 */
+  advice: AnalysisAdvice[]
 }
 
 export const DISCLAIMER = '以上是对估算数据的解读，不构成投资建议；申赎请以基金公司公告为准。'
@@ -62,18 +80,23 @@ const SYSTEM_PROMPT = [
   '4. 事件：news[].related 是标题直接命中的持仓 symbol；没有命中但明显对应 boards 的，按板块层面写。',
   '   判断事件是利好/利空/中性，以及是否已经被上一场或盘前价格反映。',
   '5. 情景：基准/乐观/悲观三档，每档给一个可观察的触发条件（盘前幅度扩大、开盘方向、汇率、事件落地）。',
+  '   在情景之上给一个倾向性判断（偏多/偏空/中性/谨慎）与时间尺度（今日开盘 / 未来 1-3 个交易日）。',
   '6. 证伪：列出会推翻当前判断的信号，以及数据缺口（coveredWeight 低、无行情的基金）。',
   '',
   '硬约束：',
   '- 只解读快照，不引入快照之外的事实（不要提快照里没有的股价、财报或宏观数据）。',
   '- 所有数字原样引用快照字段，不做新计算；引用保留两位小数。',
   '- coveredWeight=0 的基金必须说“无行情”；coveredWeight 明显小于 1 的基金要提示估值不完整。',
-  '- 不做买卖建议、不给目标价、不预测涨跌；情景是条件推演，不是预测。',
+  '- 可以给倾向性判断与条件化建议，但必须：给出依据、写清触发条件、标注时间尺度；',
+  '  不承诺收益、不编造目标价、不把情景当成确定性预测。',
   '- 数据不足写“数据不足”，不要猜。',
   '- 只输出 JSON，不要 markdown 代码块，不要多余解释。',
   '',
   'JSON 结构：',
   '{"headline":"一句话结论，40字以内，必须带方向与幅度",',
+  ' "conclusion":"2-3句总结：先倾向，再最关键的两条依据，100字以内",',
+  ' "verdict":{"stance":"偏多|偏空|中性|谨慎","horizon":"今日开盘|未来1-3个交易日","reason":"60字以内"},',
+  ' "advice":[{"action":"观望|持有|分批减|分批加|对冲|设条件单","condition":"触发条件","reason":"依据，60字以内"}],',
   ' "summary":["5-7条要点，每条60字以内，至少三条带数字"],',
   ' "drivers":[{"label":"贡献/拖累来源（个股或板块）","detail":"权重、涨跌、贡献 pp，100字以内"}],',
   ' "events":[{"title":"news 标题原文","impact":"影响哪些持仓、方向、是否已被定价，80字以内"}],',
@@ -143,6 +166,32 @@ function asScenarios(value: unknown, limit: number): AnalysisScenario[] {
   return out
 }
 
+function asVerdict(value: unknown): AnalysisVerdict | null {
+  if (typeof value !== 'object' || value === null) return null
+  const row = value as Record<string, unknown>
+  const stance = typeof row.stance === 'string' ? row.stance.trim() : ''
+  const horizon = typeof row.horizon === 'string' ? row.horizon.trim().slice(0, 30) : ''
+  const reason = typeof row.reason === 'string' ? row.reason.trim().slice(0, 120) : ''
+  if (stance !== '偏多' && stance !== '偏空' && stance !== '中性' && stance !== '谨慎') return null
+  return { stance, horizon, reason }
+}
+
+function asAdvice(value: unknown, limit: number): AnalysisAdvice[] {
+  if (!Array.isArray(value)) return []
+  const out: AnalysisAdvice[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) continue
+    const row = item as Record<string, unknown>
+    const action = typeof row.action === 'string' ? row.action.trim().slice(0, 20) : ''
+    const condition = typeof row.condition === 'string' ? row.condition.trim().slice(0, 120) : ''
+    const reason = typeof row.reason === 'string' ? row.reason.trim().slice(0, 120) : ''
+    if (action === '' || condition === '' || reason === '') continue
+    out.push({ action, condition, reason })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
 function asConfidence(value: unknown): AnalysisConfidence | null {
   if (typeof value !== 'object' || value === null) return null
   const row = value as Record<string, unknown>
@@ -201,6 +250,9 @@ export function parseAnalysis(text: string): Analysis | null {
     dataGaps: asStringArray(raw.dataGaps, 5, 120),
     confidence: asConfidence(raw.confidence),
     watch: asStringArray(raw.watch, 5, 120),
+    conclusion: typeof raw.conclusion === 'string' ? raw.conclusion.trim().slice(0, 300) : '',
+    verdict: asVerdict(raw.verdict),
+    advice: asAdvice(raw.advice, 4),
   }
 }
 

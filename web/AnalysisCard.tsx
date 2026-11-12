@@ -563,12 +563,41 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
         <div className="ai-result">
           {result.headline !== '' && <p className="ai-headline">{result.headline}</p>}
 
+          {result.verdict !== null && (
+            <div
+              className={`ai-verdict ${
+                result.verdict.stance === '偏多' ? 'up' : result.verdict.stance === '偏空' ? 'down' : 'flat'
+              }`}
+            >
+              <b>{result.verdict.stance}</b>
+              <span>{result.verdict.horizon}</span>
+              <p>{result.verdict.reason}</p>
+            </div>
+          )}
+
+          {result.conclusion !== '' && <p className="ai-conclusion">{result.conclusion}</p>}
+
           {result.summary.length > 0 && (
             <ul className="ai-list">
               {result.summary.map((line) => (
                 <li key={line}>{line}</li>
               ))}
             </ul>
+          )}
+
+          {result.advice.length > 0 && (
+            <div className="ai-advice">
+              <h3>倾向与建议</h3>
+              {result.advice.map((item) => (
+                <div className="ai-advice-row" key={`${item.action}-${item.condition}`}>
+                  <span className="ai-advice-action">{item.action}</span>
+                  <p>
+                    {item.condition}
+                    <em>{item.reason}</em>
+                  </p>
+                </div>
+              ))}
+            </div>
           )}
 
           {result.drivers.length > 0 && (

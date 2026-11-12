@@ -332,7 +332,7 @@ export function registerAiRoutes(app: FastifyInstance, dbPath: string, deps: AiR
       try {
         const text = await chatCompletion(config, buildMessages(snapshot), {
           fetchFn,
-          maxTokens: 4096,
+          maxTokens: 6000,
           timeoutMs: 60_000,
         })
         const analysis = parseAnalysis(text)

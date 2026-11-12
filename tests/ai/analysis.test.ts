@@ -50,7 +50,7 @@ describe('buildMessages · 提示词把边界说死', () => {
     const [system, user] = buildMessages(snapshot)
     expect(system!.role).toBe('system')
     expect(system!.content).toContain('不做新计算')
-    expect(system!.content).toContain('不做买卖建议')
+    expect(system!.content).toContain('条件化建议')
     expect(system!.content).toContain('只输出 JSON')
     expect(system!.content).toContain('asOf')
     expect(user!.content).toContain('270042')
@@ -82,6 +82,9 @@ describe('parseAnalysis · 只接受约定结构', () => {
       dataGaps: [],
       confidence: null,
       watch: ['等官方净值'],
+      conclusion: '',
+      verdict: null,
+      advice: [],
     })
   })
 
@@ -269,5 +272,30 @@ describe('parseAnalysis · 情景与置信度', () => {
   it('confidence 级别非法时为 null', () => {
     const parsed = parseAnalysis(JSON.stringify({ headline: 'h', summary: ['s'], confidence: { level: '很高' } }))
     expect(parsed!.confidence).toBeNull()
+  })
+})
+
+
+describe('parseAnalysis · 倾向与建议', () => {
+  it('verdict 只认四档，advice 三项齐全才保留', () => {
+    const parsed = parseAnalysis(
+      JSON.stringify({
+        headline: 'h',
+        summary: ['s'],
+        conclusion: '盘前偏空，但跌幅已接近上一场支撑。',
+        verdict: { stance: '偏空', horizon: '今日开盘', reason: '纳指期货跌超 1% 且权重集中' },
+        advice: [
+          { action: '观望', condition: '开盘后跌幅收窄至 0.5% 以内', reason: '等方向确认' },
+          { action: '减仓', condition: '' },
+        ],
+      }),
+    )
+    expect(parsed!.conclusion).toBe('盘前偏空，但跌幅已接近上一场支撑。')
+    expect(parsed!.verdict).toEqual({ stance: '偏空', horizon: '今日开盘', reason: '纳指期货跌超 1% 且权重集中' })
+    expect(parsed!.advice).toEqual([{ action: '观望', condition: '开盘后跌幅收窄至 0.5% 以内', reason: '等方向确认' }])
+  })
+
+  it('verdict 非法档位为 null', () => {
+    expect(parseAnalysis(JSON.stringify({ headline: 'h', summary: ['s'], verdict: { stance: '看涨' } }))!.verdict).toBeNull()
   })
 })

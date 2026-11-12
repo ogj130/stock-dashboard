@@ -1536,3 +1536,95 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* 倾向判断：红多绿空只是沿用涨跌色，措辞本身才是主角 */
+.ai-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+
+.ai-verdict b {
+  font-size: 12px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  border: 1px solid currentColor;
+}
+
+.ai-verdict.up b {
+  color: var(--up);
+}
+
+.ai-verdict.down b {
+  color: var(--down);
+}
+
+.ai-verdict.flat b {
+  color: var(--muted);
+}
+
+.ai-verdict span {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-verdict p {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.ai-conclusion {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.ai-advice {
+  margin-top: 10px;
+}
+
+.ai-advice h3 {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ai-advice-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-bottom: 5px;
+  border: 1px solid rgba(245, 181, 68, 0.18);
+  border-radius: 8px;
+  background: rgba(245, 181, 68, 0.04);
+}
+
+.ai-advice-action {
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(245, 181, 68, 0.35);
+  color: var(--warn);
+}
+
+.ai-advice-row p {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.ai-advice-row em {
+  display: block;
+  margin-top: 1px;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--muted);
+}
