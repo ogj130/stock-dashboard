@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import AnalysisCard from './AnalysisCard'
+import { deriveKeyStocks } from './compact'
 import PortfolioChart, {
   DEFAULT_RANGE,
   isRangeKey,
@@ -412,6 +414,9 @@ export default function App() {
     return [pinned, ...sorted.filter((f) => f.code !== openCode)]
   }, [viewFunds, tab, sort, marketIndices, openCode])
 
+  // AI 复盘的「重点个股」沿用卡片同一套聚合（成交额热度），不另算一份
+  const analysisStocks = useMemo(() => deriveKeyStocks(viewFunds), [viewFunds])
+
   // 汇总永远可见，但只统计当前 tab 的持仓——表头的数字必须和下面的行对得上
   const valued = visible.filter((f) => !uncovered(f))
   const totalValue = visible.reduce((sum, f) => sum + f.marketValue, 0)
@@ -565,6 +570,24 @@ export default function App() {
         {/* 直接贴在汇总卡下面：总资产怎么走到今天这个数的，一眼就能看见 */}
         {funds.length > 0 && (
           <PortfolioChart range={chartRange} data={history} onRangeChange={changeRange} />
+        )}
+
+        {/* AI 复盘：按需触发，不参与 5 秒轮询；没配置时只显示设置入口 */}
+        {funds.length > 0 && (
+          <AnalysisCard
+            phase={phase}
+            totals={{
+              value: totalValue,
+              amount: totalAmount,
+              amountPct: totalAmountPct,
+              holdingProfit: totalHoldingProfit,
+              holdingPct: totalHoldingPct,
+            }}
+            fx={fx}
+            indices={marketIndices}
+            funds={visible}
+            stocks={analysisStocks}
+          />
         )}
 
         {error && (

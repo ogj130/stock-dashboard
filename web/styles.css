@@ -980,3 +980,260 @@ body {
   outline: 2px solid rgba(80, 170, 255, 0.6);
   outline-offset: -2px;
 }
+
+/* ---------- AI 复盘 ---------- */
+
+.ai-card {
+  padding: 12px 16px 14px;
+}
+
+.ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.ai-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.ai-range,
+.ai-gear,
+.ai-primary {
+  padding: 3px 10px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 999px;
+  background: var(--glass-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+
+.ai-gear {
+  padding: 3px 8px;
+  color: var(--muted);
+}
+
+.ai-gear.on {
+  color: var(--text);
+  border-color: rgba(120, 160, 255, 0.45);
+  background: rgba(88, 130, 255, 0.16);
+}
+
+.ai-primary {
+  border-radius: 8px;
+  border-color: rgba(120, 160, 255, 0.45);
+  background: rgba(88, 130, 255, 0.18);
+}
+
+.ai-range:disabled,
+.ai-gear:disabled,
+.ai-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-range:focus-visible,
+.ai-gear:focus-visible,
+.ai-primary:focus-visible,
+.ai-clear:focus-visible {
+  outline: 2px solid rgba(120, 160, 255, 0.6);
+  outline-offset: 2px;
+}
+
+/* 设置区：三个输入一行，窄屏折成一列。不铺满整页——这是个弹层级的小表单 */
+.ai-settings {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ai-hint {
+  margin: 8px 0 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.ai-hint code {
+  font-size: 10px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ai-fields {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1.2fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ai-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-fields input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.ai-fields input:focus-visible {
+  outline: 2px solid rgba(120, 160, 255, 0.6);
+  outline-offset: 1px;
+}
+
+.ai-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-clear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--warn);
+  font: inherit;
+  font-size: 10px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ai-msg {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-error {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
+.ai-result {
+  margin-top: 10px;
+}
+
+.ai-headline {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.ai-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.ai-drivers {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ai-driver {
+  padding: 6px 8px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ai-driver span {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-driver p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.ai-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.ai-cols h3 {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ai-cols ul {
+  margin: 0;
+  padding-left: 14px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.ai-meta {
+  margin: 10px 0 0;
+  font-size: 9.5px;
+  color: var(--muted);
+}
+
+.ai-disclaimer {
+  margin: 2px 0 0;
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+@media (max-width: 640px) {
+  .ai-fields,
+  .ai-cols {
+    grid-template-columns: 1fr;
+  }
+}

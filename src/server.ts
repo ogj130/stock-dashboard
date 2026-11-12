@@ -8,6 +8,7 @@ import { registerEstimateRoutes } from './routes/estimate'
 import { registerPortfolioRoutes } from './routes/portfolio'
 import { registerAccuracyRoutes } from './routes/accuracy'
 import { registerNewsRoutes } from './routes/news'
+import { registerAiRoutes } from './routes/ai'
 import { QuoteRegistry } from './sources/registry'
 import { EastmoneySource, probeMarket } from './sources/eastmoney'
 import { MarketMap } from './sources/marketMap'
@@ -46,6 +47,8 @@ registerPortfolioRoutes(app, db)
 registerAccuracyRoutes(app, db)
 // 快讯只服务菜单栏卡片的「大事」Tab；与估值链路完全解耦，挂了不影响任何数字
 registerNewsRoutes(app)
+// AI 分析：配置存数据目录下的 ai.json（0600），没有配置时端点是 400 而不是报错
+registerAiRoutes(app, dbPath)
 
 /**
  * 市场码来自持仓报文的 NEWTEXCH（免费、准确），由 ensureMarkets 提前灌进这张表。

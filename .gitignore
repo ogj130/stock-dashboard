@@ -16,6 +16,8 @@ tools/mac-card/icon.iconset/
 dist-win/
 .cache/
 data/access-token.txt
+# AI 端点配置（可能含 API Key，绝不进仓库）
+data/ai.json
 data/backups/
 
 # 验收截图（headless Chrome / screencapture 生成，随时可重拍）

@@ -60,6 +60,20 @@ QDII 的官方净值 **T+1/T+2** 才披露，白天看基金 App 永远显示昨
 | 个股 | 所有基金共同持仓聚合出的重点个股，按**当日成交额（热度）**排序，显示组合权重与涨跌 |
 | 大事 | 东财 7×24 快讯，重要事件优先；命中持仓股名的标「持仓」；点整行用系统浏览器打开原文 |
 
+### AI 复盘（可选）
+
+<p align="center">
+  <img src="docs/images/ai-review.jpg" alt="AI 复盘：今日归因、风险与待核对" width="720">
+</p>
+
+汇总卡下方有一块「AI 复盘」。点「设置」填 **Base URL / 模型 / API Key**（任何兼容 OpenAI 的
+`/chat/completions` 端点都行），或者用环境变量 `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`。
+
+- 密钥写在数据目录的 `ai.json`（0600），不落库、不进仓库，接口只回掩码；
+- 按需触发，结果缓存 10 分钟，不跟 5 秒行情一起跑，没配端点时整块只显示设置入口；
+- 模型只能引用快照里的数字，不做买卖建议；快照只含基金代码/名称/金额/权重/涨跌与快讯标题，
+  不含账户身份信息。模型返回不合约定结构时整块降级，不影响估值。
+
 ## 估值口径（改代码前先读这三条）
 
 1. **QDII 净值滞后**：市值必须按滞后链复合（`src/engine/pipeline.ts` 的 `navChain`），不能只看当天。
@@ -120,6 +134,7 @@ pnpm dev -- --lan    # 或 LAN=1 pnpm dev
 - 数据只在本机 SQLite：开发时 `data/app.db`（存在时优先），否则
   macOS `~/Library/Application Support/QDII/app.db`、Windows `%APPDATA%\QDII\app.db`。
 - 没有任何上报、没有账号体系；备份就是复制这个文件。
+- 如果启用了 AI 复盘，配置（含密钥）单独存在同目录的 `ai.json`（0600），不写进数据库。
 - 行情全部是公开接口，且**不是官方 API**，随时可能变：
 
 | 用途 | 来源 |
@@ -155,6 +170,7 @@ src/
   engine/       估值链路：相位 → 滞后链 → 成分加权 → 对账
   store/        SQLite（节点快照、净值、对账样本）与备份
   routes/       /api/estimate、/api/portfolio、/api/funds、/api/accuracy、/api/news
+  ai/           AI 复盘的配置、快照校验与提示词（OpenAI 兼容端点）
   net/          局域网口令与访问控制
 web/            React 19 手写界面（无 UI 框架、无图表库，SVG 自己画）
 tools/
