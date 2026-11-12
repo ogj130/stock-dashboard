@@ -78,8 +78,9 @@ QDII 的官方净值 **T+1/T+2** 才披露，白天看基金 App 永远显示昨
   双击起服务并打开浏览器；另含菜单栏卡片 `StockCard.app`。
 - **Windows（x64）**：`QDII-24.18.0-win-x64.zip` —— 绿色版，解压双击 `start.bat`。
 
-两个包都在 [Actions](https://github.com/ogj130/stock-dashboard/actions/workflows/build.yml) 的
-Artifacts 里（打 `v*` 标签会生成 Release）。**未签名未公证**，macOS 首次打开需右键 → 打开。
+从 [Releases](https://github.com/ogj130/stock-dashboard/releases/latest) 直接下载；
+每次 push 的临时产物在 [Actions](https://github.com/ogj130/stock-dashboard/actions/workflows/build.yml)
+的 Artifacts 里（打 `v*` 标签会自动发 Release）。**未签名未公证**，macOS 首次打开需右键 → 打开。
 
 ### 本地开发
 
