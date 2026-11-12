@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="QDII 估值 · 深色玻璃拟态仪表盘" width="100%">
+  <img src="docs/images/hero.jpg" alt="QDII 估值 · 蓝色小鲸鱼与美股基金估值面板" width="100%">
 </p>
 
 # QDII 估值 · 美股基金实时估值
