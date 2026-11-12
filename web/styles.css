@@ -1628,3 +1628,188 @@ body {
   font-size: 10px;
   color: var(--muted);
 }
+
+/* ---------- 可读性：把 9–11px 的小字整体抬一档 ----------
+   桌面端信息密度可以靠留白和两栏解决，不该靠 9px 字。
+   只改主页面（cc-* 卡片是 340×420 的固定窗口，不动）。 */
+
+body {
+  font-size: 16px;
+}
+
+.summary .label {
+  font-size: 14px;
+}
+
+.tab {
+  font-size: 14px;
+}
+
+.tab-count {
+  font-size: 12px;
+}
+
+.list-head,
+.sort,
+.row {
+  font-size: 12px;
+}
+
+.c-holdpct,
+.c-boardname,
+.c-meta {
+  font-size: 12px;
+}
+
+.chip {
+  font-size: 12px;
+}
+
+.ai-title {
+  font-size: 15px;
+}
+
+.ai-sub {
+  font-size: 12px;
+}
+
+.ai-hint {
+  font-size: 12px;
+}
+
+.ai-fields label,
+.ai-profile-row label,
+.ai-model-pick {
+  font-size: 11.5px;
+}
+
+.ai-fields input,
+.ai-profile-row select,
+.ai-model-pick select {
+  font-size: 13px;
+}
+
+.ai-range,
+.ai-gear,
+.ai-primary {
+  font-size: 12.5px;
+}
+
+.ai-msg {
+  font-size: 11.5px;
+}
+
+.ai-error {
+  font-size: 12.5px;
+}
+
+.ai-headline {
+  font-size: 15px;
+}
+
+.ai-conclusion {
+  font-size: 13.5px;
+}
+
+.ai-list {
+  font-size: 13px;
+}
+
+.ai-verdict b {
+  font-size: 14px;
+}
+
+.ai-verdict span,
+.ai-verdict p {
+  font-size: 12px;
+}
+
+.ai-advice h3,
+.ai-events h3,
+.ai-scenarios h3,
+.ai-gaps h3,
+.ai-cols h3 {
+  font-size: 11.5px;
+}
+
+.ai-advice-action {
+  font-size: 11.5px;
+}
+
+.ai-advice-row p {
+  font-size: 12.5px;
+}
+
+.ai-advice-row em {
+  font-size: 11.5px;
+}
+
+.ai-driver span {
+  font-size: 11.5px;
+}
+
+.ai-driver p {
+  font-size: 12.5px;
+}
+
+.ai-event span {
+  font-size: 12.5px;
+}
+
+.ai-event p {
+  font-size: 12px;
+}
+
+.ai-scenario-name {
+  font-size: 11px;
+}
+
+.ai-scenario-trigger {
+  font-size: 12px;
+}
+
+.ai-scenario-impl {
+  font-size: 11.5px;
+}
+
+.ai-gaps ul,
+.ai-cols ul {
+  font-size: 12.5px;
+}
+
+.ai-meta {
+  font-size: 11px;
+}
+
+.ai-disclaimer {
+  font-size: 10.5px;
+}
+
+.ai-progress-head {
+  font-size: 11.5px;
+}
+
+.ai-step {
+  font-size: 12.5px;
+}
+
+.ai-step-detail {
+  font-size: 11.5px;
+}
+
+/* 倾向条在窄屏折成两段：徽章不再被挤成竖排两个字 */
+.ai-verdict {
+  flex-wrap: wrap;
+}
+
+.ai-verdict b {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .ai-verdict {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+}
