@@ -8,6 +8,7 @@
 # 数据安全约定（本脚本的红线）：
 #   - 只拷贝 dist/ 与 server.mjs，**绝不**碰 data/、*.db、.env
 #   - 打完做一次自检：zip 里出现任何 *.db 就直接失败退出
+#   - 打包前用本机 node 把包目录起一遍，断言 / 与静态资源 200（否则 404 会静默发出去）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -17,19 +18,19 @@ NAME="QDII-${NODE_VER#v}-win-x64"
 PKG="${OUT}/${NAME}"
 ZIP="${OUT}/${NAME}.zip"
 
-echo "==> 1/6 清理"
+echo "==> 1/7 清理"
 rm -rf "${OUT:?}"
 mkdir -p "${PKG}"
 
-echo "==> 2/6 构建前端"
+echo "==> 2/7 构建前端"
 cd "${ROOT}"
 pnpm exec vite build >/dev/null
 cp -R "${ROOT}/dist" "${PKG}/dist"
 
-echo "==> 3/6 打包服务端 bundle"
+echo "==> 3/7 打包服务端 bundle"
 node "${ROOT}/tools/win/build-server.mjs" "${PKG}/server.mjs"
 
-echo "==> 4/6 取 Windows node（${NODE_VER}）"
+echo "==> 4/7 取 Windows node（${NODE_VER}）"
 CACHE="${ROOT}/.cache"
 mkdir -p "${CACHE}"
 ZIPFILE="${CACHE}/node-${NODE_VER}-win-x64.zip"
@@ -41,7 +42,7 @@ unzip -o -q "${ZIPFILE}" "node-${NODE_VER}-win-x64/node.exe" -d "${CACHE}/tmp"
 cp "${CACHE}/tmp/node-${NODE_VER}-win-x64/node.exe" "${PKG}/node.exe"
 rm -rf "${CACHE:?}/tmp"
 
-echo "==> 5/6 启动脚本与说明"
+echo "==> 5/7 启动脚本与说明"
 # 文件名与批处理内容一律 ASCII：Windows 自带解压按 OEM 代码页处理中文名，
 # 在 mac 上打的包解出来常常全是乱码（实测 zip 列表已乱）。中文说明放 README.txt。
 cat > "${PKG}/start.bat" <<'BAT'
@@ -95,7 +96,57 @@ text = """QDII 估值（Windows 绿色版）
 open(sys.argv[1], 'w', encoding='utf-8-sig').write(text)
 PYEOF
 
-echo "==> 6/6 自检 + 压缩"
+echo "==> 6/7 冒烟自检（用本机 node 跑同一份 bundle，模拟用户解压后的目录结构）"
+# 这一步是为了堵 2026-11-11 那次事故：bundle 里的 import.meta.url 指向包内的 server.mjs，
+# 前端目录没找对时 / 变 404、/api 却正常——只看「打包成功」根本发现不了。
+# 所以这里真的把包目录当工作目录起一次服务，断言 / 与静态资源都是 200。
+SMOKE_TMP="$(mktemp -d)"
+SMOKE_PORT="${SMOKE_PORT:-$((5500 + RANDOM % 400))}"
+SMOKE_PID=""
+cleanup_smoke() {
+  if [ -n "${SMOKE_PID}" ] && kill -0 "${SMOKE_PID}" 2>/dev/null; then
+    kill "${SMOKE_PID}" 2>/dev/null || true
+    wait "${SMOKE_PID}" 2>/dev/null || true
+  fi
+  rm -rf "${SMOKE_TMP}"
+}
+trap cleanup_smoke EXIT
+(
+  cd "${PKG}"
+  exec env DB_PATH="${SMOKE_TMP}/smoke.db" PORT="${SMOKE_PORT}" node server.mjs
+) >"${SMOKE_TMP}/smoke.log" 2>&1 &
+SMOKE_PID=$!
+
+smoke_code=000
+for _ in $(seq 1 40); do
+  smoke_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SMOKE_PORT}/api/health" || true)
+  [ "${smoke_code}" = "200" ] && break
+  sleep 0.25
+done
+if [ "${smoke_code}" != "200" ]; then
+  echo "!! 服务没起来（/api/health = ${smoke_code}），冒烟日志：" >&2
+  tail -20 "${SMOKE_TMP}/smoke.log" >&2
+  exit 1
+fi
+
+root_code=$(curl -s -o "${SMOKE_TMP}/index.html" -w '%{http_code}' "http://127.0.0.1:${SMOKE_PORT}/" || true)
+if [ "${root_code}" != "200" ] || ! grep -q 'id="root"' "${SMOKE_TMP}/index.html"; then
+  echo "!! 首页不可用（GET / = ${root_code}），冒烟日志：" >&2
+  tail -20 "${SMOKE_TMP}/smoke.log" >&2
+  exit 1
+fi
+smoke_asset=$(grep -o '/assets/[^"]*\.js' "${SMOKE_TMP}/index.html" | head -1 || true)
+asset_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SMOKE_PORT}${smoke_asset}" || true)
+if [ -z "${smoke_asset}" ] || [ "${asset_code}" != "200" ]; then
+  echo "!! 静态资源不可用（${smoke_asset:-index.html 里没有 /assets/*.js} = ${asset_code}）" >&2
+  tail -20 "${SMOKE_TMP}/smoke.log" >&2
+  exit 1
+fi
+cleanup_smoke
+trap - EXIT
+echo "    GET / 200、${smoke_asset} 200、/api/health 200"
+
+echo "==> 7/7 自检 + 压缩"
 # 红线：包内不允许出现任何数据库/密钥文件
 if find "${PKG}" -type f \( -name '*.db' -o -name '*.db-*' -o -name '*.env' -o -name 'access-token.txt' \) | grep -q .; then
   echo "!! 包里混进了数据文件，拒绝打包：" >&2

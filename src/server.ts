@@ -17,24 +17,33 @@ import { derivePhaseLocal } from './engine/phase'
 import { defaultDbPath } from './store/path'
 import { runMaintenance } from './store/maintenance'
 import { loadOrCreateToken, registerAccessGate, resolveHost } from './net/access'
+import { distRootCandidates, pickDistRoot } from './static'
 import { dirname, join } from 'node:path'
 
 const dbPath = defaultDbPath()
 const db = openDb(dbPath)
 const app = Fastify({ logger: true })
 
-// 前端构建产物；dist 不存在时 @fastify/static 只告警不注册路由，API 照常可用。
-// DIST_DIR 是给打包版用的：单文件 bundle 之后 import.meta.url 不再指向 src/，
-// 相对路径会飘，必须能显式指定。
-const distRoot = process.env.DIST_DIR ?? fileURLToPath(new URL('../dist', import.meta.url))
-await app.register(fastifyStatic, {
-  root: distRoot,
-  wildcard: false,
-})
+// 前端构建产物。路径必须按候选列表找：单文件 bundle 之后 import.meta.url 指向包目录里的
+// server.mjs，裸写 `../dist` 会飘到包目录上一级——线上那次「访问 / 404、API 正常」就是这么来的。
+// 找不到时只提供 API，并把查过哪些路径写进日志，而不是静默 404。
+const distPick = pickDistRoot(
+  distRootCandidates(dirname(fileURLToPath(import.meta.url)), process.cwd(), process.env.DIST_DIR),
+)
+const distRoot = distPick.root
+if (distRoot) {
+  await app.register(fastifyStatic, { root: distRoot, wildcard: false })
+} else {
+  app.log.error(
+    { checked: distPick.checked.map((c) => c.path), missingIndexHtml: distPick.incomplete },
+    '找不到前端产物（dist/index.html）：本次只提供 /api/*，访问 / 会是 404',
+  )
+}
 
 registerFundRoutes(app, db)
 registerPortfolioRoutes(app, db)
 registerAccuracyRoutes(app, db)
+// 快讯只服务菜单栏卡片的「大事」Tab；与估值链路完全解耦，挂了不影响任何数字
 
 /**
  * 市场码来自持仓报文的 NEWTEXCH（免费、准确），由 ensureMarkets 提前灌进这张表。
@@ -108,6 +117,7 @@ if (lan) {
 await app.listen({ port, host })
 console.log(`db       ${dbPath}`)
 console.log(`ui       http://127.0.0.1:${port}`)
+console.log(`web      ${distRoot ?? '未找到 dist/index.html，只提供 /api/*'}`)
 if (lan) {
   const nets = Object.values(networkInterfaces())
     .flat()
