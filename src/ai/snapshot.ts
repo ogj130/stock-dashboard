@@ -59,6 +59,15 @@ export interface AnalysisSnapshot {
   indices: Array<{ name: string; pct: number; asOf: string }>
   /** 按跟踪指数聚合的板块权重 */
   boards: Array<{ name: string; weightPct: number }>
+  /** 预先算好的组合分析量（贡献 pp、集中度、覆盖、汇率） */
+  analytics: {
+    topContributors: Array<{ symbol: string; name: string; weightPct: number; pct: number; contributionPp: number }>
+    topDetractors: Array<{ symbol: string; name: string; weightPct: number; pct: number; contributionPp: number }>
+    concentration: { top3WeightPct: number; top5WeightPct: number }
+    coverage: { coveredFunds: number; blindFunds: number; coveredValuePct: number }
+    fxImpactPp: number
+    fundMoves: Array<{ code: string; name: string; pct: number; amount: number }>
+  }
   funds: SnapshotFund[]
   stocks: SnapshotStock[]
   news: SnapshotNews[]
@@ -167,6 +176,48 @@ export function parseSnapshot(input: unknown): ParseResult {
     .map((item) => ({ name: str(item.name, 20), weightPct: num(item.weightPct) }))
     .filter((item) => item.name !== '')
 
+  const analyticsRaw =
+    typeof raw.analytics === 'object' && raw.analytics !== null ? (raw.analytics as Record<string, unknown>) : {}
+  const rowList = (value: unknown, limit: number): Array<Record<string, unknown>> =>
+    Array.isArray(value)
+      ? value.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null).slice(0, limit)
+      : []
+  const contributionRows = (value: unknown) =>
+    rowList(value, 5)
+      .map((row) => ({
+        symbol: str(row.symbol, 10),
+        name: str(row.name, 30),
+        weightPct: num(row.weightPct),
+        pct: num(row.pct),
+        contributionPp: num(row.contributionPp),
+      }))
+      .filter((row) => row.symbol !== '')
+  const concentrationRaw =
+    typeof analyticsRaw.concentration === 'object' && analyticsRaw.concentration !== null
+      ? (analyticsRaw.concentration as Record<string, unknown>)
+      : {}
+  const coverageRaw =
+    typeof analyticsRaw.coverage === 'object' && analyticsRaw.coverage !== null
+      ? (analyticsRaw.coverage as Record<string, unknown>)
+      : {}
+  const analytics = {
+    topContributors: contributionRows(analyticsRaw.topContributors),
+    topDetractors: contributionRows(analyticsRaw.topDetractors),
+    concentration: {
+      top3WeightPct: num(concentrationRaw.top3WeightPct),
+      top5WeightPct: num(concentrationRaw.top5WeightPct),
+    },
+    coverage: {
+      coveredFunds: Math.max(0, Math.round(num(coverageRaw.coveredFunds))),
+      blindFunds: Math.max(0, Math.round(num(coverageRaw.blindFunds))),
+      coveredValuePct: num(coverageRaw.coveredValuePct),
+    },
+    fxImpactPp: num(analyticsRaw.fxImpactPp),
+    fundMoves: rowList(analyticsRaw.fundMoves, 6)
+      .map((row) => ({ code: str(row.code, 12), name: str(row.name, 30), pct: num(row.pct), amount: num(row.amount) }))
+      .filter((row) => row.code !== ''),
+  }
+
   const clockRaw = typeof raw.clock === 'object' && raw.clock !== null ? (raw.clock as Record<string, unknown>) : {}
   const clock = {
     local: str(clockRaw.local, 30) || '未知',
@@ -188,6 +239,7 @@ export function parseSnapshot(input: unknown): ParseResult {
       fx,
       indices,
       boards,
+      analytics,
       funds,
       stocks,
       news,

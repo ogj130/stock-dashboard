@@ -49,7 +49,7 @@ describe('buildMessages · 提示词把边界说死', () => {
   it('system 里写清楚「不许算数、不做买卖建议、只输出 JSON」', () => {
     const [system, user] = buildMessages(snapshot)
     expect(system!.role).toBe('system')
-    expect(system!.content).toContain('不要做新的计算')
+    expect(system!.content).toContain('不做新计算')
     expect(system!.content).toContain('不做买卖建议')
     expect(system!.content).toContain('只输出 JSON')
     expect(system!.content).toContain('asOf')
@@ -77,7 +77,10 @@ describe('parseAnalysis · 只接受约定结构', () => {
       summary: ['广发纳指 +2.07%'],
       drivers: [{ label: '英伟达', detail: '+4.61%' }],
       events: [],
+      scenarios: [],
       risks: ['集中度高'],
+      dataGaps: [],
+      confidence: null,
       watch: ['等官方净值'],
     })
   })
@@ -239,5 +242,32 @@ describe('parseAnalysis · 事件归因', () => {
     expect(parsed!.events).toEqual([
       { title: '费城半导体指数涨幅扩大至7%', impact: '利好 NVDA、MU，与基金估算反向' },
     ])
+  })
+})
+
+
+describe('parseAnalysis · 情景与置信度', () => {
+  it('scenarios 保留 name/trigger/implication，confidence 只认三档', () => {
+    const parsed = parseAnalysis(
+      JSON.stringify({
+        headline: 'h',
+        summary: ['s'],
+        scenarios: [
+          { name: '基准', trigger: '盘前跌幅收窄', implication: '估算回到 -0.5% 以内' },
+          { name: '乐观', trigger: '开盘翻红', implication: '当日转正' },
+          { name: '悲观', trigger: '跌破前低', implication: '放大回撤' },
+        ],
+        dataGaps: ['096001 覆盖仅 2%'],
+        confidence: { level: '中', reason: '覆盖率与样本都不算高' },
+      }),
+    )
+    expect(parsed!.scenarios).toHaveLength(3)
+    expect(parsed!.dataGaps).toEqual(['096001 覆盖仅 2%'])
+    expect(parsed!.confidence).toEqual({ level: '中', reason: '覆盖率与样本都不算高' })
+  })
+
+  it('confidence 级别非法时为 null', () => {
+    const parsed = parseAnalysis(JSON.stringify({ headline: 'h', summary: ['s'], confidence: { level: '很高' } }))
+    expect(parsed!.confidence).toBeNull()
   })
 })

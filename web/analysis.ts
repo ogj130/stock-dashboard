@@ -61,6 +61,15 @@ export interface AnalysisSnapshot {
   indices: Array<{ name: string; pct: number; asOf: string }>
   /** 按跟踪指数聚合的板块权重，供模型把「半导体/纳指」类新闻挂到持仓上 */
   boards: Array<{ name: string; weightPct: number }>
+  /** 预先算好的组合分析量：贡献 pp、集中度、覆盖率、汇率影响 */
+  analytics: {
+    topContributors: Array<{ symbol: string; name: string; weightPct: number; pct: number; contributionPp: number }>
+    topDetractors: Array<{ symbol: string; name: string; weightPct: number; pct: number; contributionPp: number }>
+    concentration: { top3WeightPct: number; top5WeightPct: number }
+    coverage: { coveredFunds: number; blindFunds: number; coveredValuePct: number }
+    fxImpactPp: number
+    fundMoves: Array<{ code: string; name: string; pct: number; amount: number }>
+  }
   funds: Array<{
     code: string
     name: string
@@ -112,6 +121,43 @@ export function buildAnalysisSnapshot(input: BuildSnapshotInput): AnalysisSnapsh
   const boards = [...boardTotals.entries()]
     .map(([name, value]) => ({ name, weightPct: totalValue > 0 ? round((value / totalValue) * 100, 2) : 0 }))
     .sort((a, b) => b.weightPct - a.weightPct)
+
+  // ---- 组合分析量：模型不该自己算，这些数直接给它 ----
+  // 贡献 pp = 组合权重 × 个股涨跌；用传进来的聚合结果，不再重复汇总一遍
+  const stockRows = input.stocks.map((stock) => ({
+    symbol: stock.symbol,
+    name: stock.name,
+    weightPct: round(stock.weightPct),
+    pct: round(stock.pct),
+    contributionPp: round((stock.weightPct * stock.pct) / 100, 3),
+  }))
+  const byContribution = [...stockRows].sort((a, b) => b.contributionPp - a.contributionPp)
+  const topContributors = byContribution.filter((row) => row.contributionPp > 0).slice(0, 3)
+  const topDetractors = [...byContribution].reverse().filter((row) => row.contributionPp < 0).slice(0, 3)
+
+  const weights = [...stockRows].map((row) => row.weightPct).sort((a, b) => b - a)
+  const concentration = {
+    top3WeightPct: round(weights.slice(0, 3).reduce((sum, w) => sum + w, 0)),
+    top5WeightPct: round(weights.slice(0, 5).reduce((sum, w) => sum + w, 0)),
+  }
+
+  const coveredFunds = input.funds.filter((f) => f.coveredWeight > 0).length
+  const coveredValue = input.funds.reduce(
+    (sum, f) => sum + (f.coveredWeight > 0 ? f.marketValue : 0),
+    0,
+  )
+  const coverage = {
+    coveredFunds,
+    blindFunds: input.funds.length - coveredFunds,
+    coveredValuePct: totalValue > 0 ? round((coveredValue / totalValue) * 100) : 0,
+  }
+  const fxImpactPp = input.fx !== null ? round(input.fx.pct * (coveredValue / Math.max(totalValue, 1)), 3) : 0
+
+  const fundMoves = [...input.funds]
+    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+    .slice(0, 5)
+    .map((f) => ({ code: f.code, name: f.name, pct: round(f.navPct, 3), amount: round(f.amount) }))
+
   return {
     phase: input.phase,
     atMs: input.atMs,
@@ -127,6 +173,14 @@ export function buildAnalysisSnapshot(input: BuildSnapshotInput): AnalysisSnapsh
         : { pair: input.fx.pair, rate: round(input.fx.rate, 4), pct: round(input.fx.pct, 3) },
     indices: input.indices.map((item) => ({ name: item.name, pct: round(item.pct), asOf })),
     boards,
+    analytics: {
+      topContributors,
+      topDetractors,
+      concentration,
+      coverage,
+      fxImpactPp,
+      fundMoves,
+    },
     funds: input.funds.map((f) => ({
       code: f.code,
       name: f.name,
@@ -165,12 +219,21 @@ export interface AnalysisEvent {
   impact: string
 }
 
+export interface AnalysisScenario {
+  name: string
+  trigger: string
+  implication: string
+}
+
 export interface AnalysisResult {
   headline: string
   summary: string[]
   drivers: AnalysisDriver[]
   events: AnalysisEvent[]
+  scenarios: AnalysisScenario[]
   risks: string[]
+  dataGaps: string[]
+  confidence: { level: string; reason: string } | null
   watch: string[]
   model: string
   generatedAt: number

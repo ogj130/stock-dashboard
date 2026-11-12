@@ -43,6 +43,10 @@ describe('buildAnalysisSnapshot · 前端只搬运已算好的数', () => {
     expect(snap.news[0]!.important).toBe(true)
     // 板块权重按基金市值聚合，给模型挂「半导体/纳指」类事件用
     expect(snap.boards).toEqual([{ name: '纳斯达克100', weightPct: 20.53 }])
+    // 贡献 pp = 权重 × 涨跌 / 100：10.08 × 4.61 / 100 ≈ 0.46
+    expect(snap.analytics.topContributors[0]).toMatchObject({ symbol: 'NVDA', contributionPp: 0.465 })
+    expect(snap.analytics.concentration.top3WeightPct).toBe(10.08)
+    expect(snap.analytics.coverage).toEqual({ coveredFunds: 1, blindFunds: 0, coveredValuePct: 20.53 })
   })
 
   it('空列表也能构建（让服务端去拒绝，前端不预判）', () => {

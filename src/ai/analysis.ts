@@ -22,45 +22,66 @@ export interface AnalysisEvent {
   impact: string
 }
 
+export interface AnalysisScenario {
+  name: string
+  trigger: string
+  implication: string
+}
+
+export interface AnalysisConfidence {
+  level: '低' | '中' | '高'
+  reason: string
+}
+
 export interface Analysis {
   headline: string
   summary: string[]
   drivers: AnalysisDriver[]
   /** 事件 → 持仓的关联（news[].related 已经算好命中哪些 symbol） */
   events: AnalysisEvent[]
+  scenarios: AnalysisScenario[]
   risks: string[]
+  dataGaps: string[]
+  confidence: AnalysisConfidence | null
   watch: string[]
 }
 
 export const DISCLAIMER = '以上是对估算数据的解读，不构成投资建议；申赎请以基金公司公告为准。'
 
 const SYSTEM_PROMPT = [
-  '你是「QDII 估值」看板里的持仓复盘助手。用户持有的是投资美股/海外市场的 QDII 基金。',
-  '你只会收到一份 JSON 快照，里面的数字都由估值引擎算好。规则：',
-  '1. 先读 clock 与 phase：clock.local 是北京时间、clock.et 是美东时间，clock.session 是阶段。',
-  '2. 严格区分时段：indices[].asOf / stocks[].asOf 为「上一交易日收盘」时，那些涨跌属于上一场，',
-  '   绝不能写成“今天盘前涨了 X%”。今天盘前的变动只在 funds[].pct（相对昨收）里。',
-  '3. 只解读快照，不引入任何外部事实（不要提快照里没有的股价、新闻或宏观数据）。',
-  '4. 所有数字必须原样引用快照字段，不要做新的计算或换算；需要比较时只做定性描述。',
-  '   快照里的数字已按界面口径四舍五入，引用时保留两位小数即可，不要输出一长串浮点。',
-  '5. coveredWeight=0 的基金表示当天没有可用行情，必须说明“无行情”，不能当成 0%；',
-  '   coveredWeight 明显小于 1 的基金，要强调估值不完整。',
-  '6. 事件归因：news[].related 已给出标题命中的持仓 symbol。优先挑 related 非空的新闻写进 events',
-  '   （title 原样引用，impact 说明它影响哪些持仓、与哪些数字同向/反向）。',
-  '   如果 related 都为空，但新闻与 boards 里的板块/指数明显相关（例如「费城半导体指数」对应纳指/半导体持仓），',
-  '   也要写，并说明是板块层面而非个股直接命中；两者都没有才写“暂无与持仓直接相关的事件”，不要编造。',
-  '7. 个股与指数要一起用：drivers 里优先解释“哪些个股/板块带动或拖累”，并引用权重与涨跌。',
-  '8. 数据不足时写“数据不足”，不要猜。',
-  '9. 不做买卖建议、不给目标价、不预测涨跌。',
-  '10. 只输出 JSON，不要 markdown 代码块，不要多余解释。',
+  '你是一名给基金经理写「盘前/盘中简报」的组合分析师。读者已经知道自己的持仓，',
+  '他要的是：发生了什么、钱从哪来、哪里不对劲、接下来看什么。不要复述界面。',
+  '',
+  '分析框架（内部执行，不要输出步骤）：',
+  '1. 先定基准：读 clock 与 phase；indices[].asOf / stocks[].asOf 为「上一交易日收盘」时，',
+  '   那些涨跌属于上一场，绝不能写成今天盘前。今天盘前的变动只在 funds[].pct（相对昨收）。',
+  '2. 组合层：看 analytics.concentration（前 3/前 5 权重）、analytics.coverage（覆盖基金数与市值占比）、',
+  '   fxImpactPp（汇率对当日估算的 pp 贡献）、totalAmountPct 与 totalHoldingPct 的差异。',
+  '3. 归因：用 analytics.topContributors / topDetractors 的 contributionPp 说明「谁贡献了几个 pp」，',
+  '   再对应到板块（boards）与个股（stocks）；不要只说“半导体上涨”，要给出权重、涨跌与 pp。',
+  '4. 事件：news[].related 是标题直接命中的持仓 symbol；没有命中但明显对应 boards 的，按板块层面写。',
+  '   判断事件是利好/利空/中性，以及是否已经被上一场或盘前价格反映。',
+  '5. 情景：基准/乐观/悲观三档，每档给一个可观察的触发条件（盘前幅度扩大、开盘方向、汇率、事件落地）。',
+  '6. 证伪：列出会推翻当前判断的信号，以及数据缺口（coveredWeight 低、无行情的基金）。',
+  '',
+  '硬约束：',
+  '- 只解读快照，不引入快照之外的事实（不要提快照里没有的股价、财报或宏观数据）。',
+  '- 所有数字原样引用快照字段，不做新计算；引用保留两位小数。',
+  '- coveredWeight=0 的基金必须说“无行情”；coveredWeight 明显小于 1 的基金要提示估值不完整。',
+  '- 不做买卖建议、不给目标价、不预测涨跌；情景是条件推演，不是预测。',
+  '- 数据不足写“数据不足”，不要猜。',
+  '- 只输出 JSON，不要 markdown 代码块，不要多余解释。',
   '',
   'JSON 结构：',
-  '{"headline":"一句话结论，40字以内",',
-  ' "summary":["3-5条要点，每条40字以内"],',
-  ' "drivers":[{"label":"贡献或拖累来源","detail":"引用快照数字说明，60字以内"}],',
-  ' "events":[{"title":"news 里的标题原文","impact":"影响哪些持仓 symbol、与数字同向还是反向，60字以内"}],',
-  ' "risks":["1-3条风险，40字以内"],',
-  ' "watch":["1-3条接下来值得核对的事，40字以内"]}',
+  '{"headline":"一句话结论，40字以内，必须带方向与幅度",',
+  ' "summary":["5-7条要点，每条60字以内，至少三条带数字"],',
+  ' "drivers":[{"label":"贡献/拖累来源（个股或板块）","detail":"权重、涨跌、贡献 pp，100字以内"}],',
+  ' "events":[{"title":"news 标题原文","impact":"影响哪些持仓、方向、是否已被定价，80字以内"}],',
+  ' "scenarios":[{"name":"基准|乐观|悲观","trigger":"可观察的触发条件","implication":"对组合的含义，60字以内"}],',
+  ' "risks":["2-4条风险，每条60字以内"],',
+  ' "dataGaps":["1-4条数据缺口，60字以内"],',
+  ' "confidence":{"level":"低|中|高","reason":"为什么是这个置信度，60字以内"},',
+  ' "watch":["2-4条接下来核对的事，每条60字以内"]}',
 ].join('\n')
 
 /** 把快照铺成给模型看的文本；保持字段名，方便它在回答里引用 */
@@ -104,6 +125,31 @@ function asEvents(value: unknown, limit: number): AnalysisEvent[] {
     if (out.length >= limit) break
   }
   return out
+}
+
+function asScenarios(value: unknown, limit: number): AnalysisScenario[] {
+  if (!Array.isArray(value)) return []
+  const out: AnalysisScenario[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) continue
+    const row = item as Record<string, unknown>
+    const name = typeof row.name === 'string' ? row.name.trim().slice(0, 10) : ''
+    const trigger = typeof row.trigger === 'string' ? row.trigger.trim().slice(0, 120) : ''
+    const implication = typeof row.implication === 'string' ? row.implication.trim().slice(0, 100) : ''
+    if (name === '' || trigger === '' || implication === '') continue
+    out.push({ name, trigger, implication })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+function asConfidence(value: unknown): AnalysisConfidence | null {
+  if (typeof value !== 'object' || value === null) return null
+  const row = value as Record<string, unknown>
+  const level = typeof row.level === 'string' ? row.level.trim() : ''
+  const reason = typeof row.reason === 'string' ? row.reason.trim().slice(0, 120) : ''
+  if (level !== '低' && level !== '中' && level !== '高') return null
+  return { level, reason }
 }
 
 function asDrivers(value: unknown, limit: number): AnalysisDriver[] {
@@ -150,7 +196,10 @@ export function parseAnalysis(text: string): Analysis | null {
     summary,
     drivers: asDrivers(raw.drivers, 6),
     events: asEvents(raw.events, 5),
+    scenarios: asScenarios(raw.scenarios, 4),
     risks: asStringArray(raw.risks, 5, 120),
+    dataGaps: asStringArray(raw.dataGaps, 5, 120),
+    confidence: asConfidence(raw.confidence),
     watch: asStringArray(raw.watch, 5, 120),
   }
 }

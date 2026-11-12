@@ -1463,3 +1463,76 @@ body {
   line-height: 1.5;
   color: var(--muted);
 }
+
+/* 情景推演：三档并排，手机折成一列。不给红绿——情景不是涨跌预测 */
+.ai-scenarios {
+  margin-top: 10px;
+}
+
+.ai-scenarios h3,
+.ai-gaps h3 {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ai-scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ai-scenario {
+  padding: 6px 8px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.ai-scenario-name {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(120, 160, 255, 0.12);
+  color: var(--text);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.ai-scenario-trigger {
+  margin: 4px 0 2px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.ai-scenario-impl {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.ai-gaps {
+  margin-top: 10px;
+}
+
+.ai-gaps ul {
+  margin: 0;
+  padding-left: 14px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.ai-confidence {
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .ai-scenario-grid {
+    grid-template-columns: 1fr;
+  }
+}

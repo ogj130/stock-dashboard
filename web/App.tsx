@@ -415,7 +415,7 @@ export default function App() {
   }, [viewFunds, tab, sort, marketIndices, openCode])
 
   // AI 复盘的「重点个股」沿用卡片同一套聚合（成交额热度），不另算一份
-  const analysisStocks = useMemo(() => deriveKeyStocks(viewFunds), [viewFunds])
+  const analysisStocks = useMemo(() => deriveKeyStocks(viewFunds, 30), [viewFunds])
 
   // 汇总永远可见，但只统计当前 tab 的持仓——表头的数字必须和下面的行对得上
   const valued = visible.filter((f) => !uncovered(f))

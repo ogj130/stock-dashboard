@@ -73,6 +73,10 @@ QDII 的官方净值 **T+1/T+2** 才披露，白天看基金 App 永远显示昨
 </p>
 
 <p align="center">
+  <img src="docs/images/ai-scenarios.jpg" alt="AI 复盘：情景推演、数据盲区与风险" width="720">
+</p>
+
+<p align="center">
   <img src="docs/images/ai-profiles.jpg" alt="AI 配置：多档案切换与模型列表" width="720">
 </p>
 
@@ -85,6 +89,11 @@ QDII 的官方净值 **T+1/T+2** 才披露，白天看基金 App 永远显示昨
 - 快照带**北京/美东时间与阶段**：盘前时明确标注指数与个股属于「上一交易日收盘」，
   不会把上一场涨幅当成今天盘前；净值日、补了几场也一并给模型；
 - **事件归因**：快讯标题与持仓个股/板块做匹配，单独输出「事件与持仓」；
+- **研究框架**：用预算好的贡献 pp、集中度（前 3/前 5 权重）、覆盖率与汇率影响做归因，
+  再给出基准/乐观/悲观三档情景（各带触发条件）、数据盲区与置信度。框架参考了
+  [trading-analysis-skill](https://github.com/GrantDeng/trading-analysis-skill) 的
+  「多空对抗 + 风险校验」结构和 [skill-financial-analyst](https://github.com/geogons/skill-financial-analyst)
+  的分层评分思路，按本系统只有估值快照的边界做了裁剪；
 - 按需触发，结果缓存 10 分钟，不跟 5 秒行情一起跑，没配端点时整块只显示设置入口；
 - 推理型模型（先输出思考）也支持：默认 4096 token，遇到截断会自动翻倍重试一次；
 - 生成时有一块「处理过程」：整理快照（多少只基金/个股/快讯）→ 发送给模型（端点与模型名）

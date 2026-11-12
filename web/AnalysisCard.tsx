@@ -594,6 +594,32 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
             </div>
           )}
 
+          {result.scenarios.length > 0 && (
+            <div className="ai-scenarios">
+              <h3>情景推演</h3>
+              <div className="ai-scenario-grid">
+                {result.scenarios.map((scenario) => (
+                  <div className="ai-scenario" key={`${scenario.name}-${scenario.trigger}`}>
+                    <span className="ai-scenario-name">{scenario.name}</span>
+                    <p className="ai-scenario-trigger">{scenario.trigger}</p>
+                    <p className="ai-scenario-impl">{scenario.implication}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {result.dataGaps.length > 0 && (
+            <section className="ai-gaps">
+              <h3>数据盲区</h3>
+              <ul>
+                {result.dataGaps.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {(result.risks.length > 0 || result.watch.length > 0) && (
             <div className="ai-cols">
               {result.risks.length > 0 && (
@@ -623,6 +649,11 @@ export default function AnalysisCard({ phase, totals, fx, indices, funds, stocks
             {result.model} · {analysisClock(result.generatedAt)}
             {lastMs !== null ? ` · ${(lastMs / 1000).toFixed(1)}s` : ''}
             {result.cached ? ' · 缓存' : ''}
+            {result.confidence !== null && (
+              <span className="ai-confidence" title={result.confidence.reason}>
+                {' · '}置信度 {result.confidence.level}
+              </span>
+            )}
           </p>
           <p className="ai-disclaimer">{result.disclaimer}</p>
         </div>
