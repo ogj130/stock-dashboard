@@ -16,3 +16,6 @@ dist-win/
 .cache/
 data/access-token.txt
 data/backups/
+
+# 验收截图（headless Chrome / screencapture 生成，随时可重拍）
+data/shots/

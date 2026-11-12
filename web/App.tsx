@@ -6,7 +6,7 @@ import PortfolioChart, {
   type RangeKey,
 } from './PortfolioChart'
 import { afterHoursClock, summarizeAfterHours, type AfterHoursLite } from './afterHours'
-import { money, pctText, signedMoney, tone } from './format'
+import { money, pctFromDelta, pctText, signedMoney, tone } from './format'
 import { weightChip, type WeightChipInput } from './weightChip'
 import { preViewFunds } from './preView'
 
@@ -420,6 +420,13 @@ export default function App() {
   const blindCount = visible.length - valued.length
   const totalCost = visible.reduce((sum, f) => sum + f.costBasis, 0)
   const totalHoldingPct = totalCost === 0 ? null : (totalHoldingProfit / totalCost) * 100
+  /**
+   * 今日估算的百分比：分母只能是**有行情那几只**的变动前市值。
+   * 无覆盖的基金市值是真的（计入总资产），但它今天的涨跌是未知的——把它塞进
+   * 分母就等于默认它今天一动不动，覆盖率低的那天会把跌幅算轻。
+   */
+  const coveredValue = valued.reduce((sum, f) => sum + f.marketValue, 0)
+  const totalAmountPct = valued.length > 0 ? pctFromDelta(totalAmount, coveredValue) : null
 
   /**
    * 夜盘汇总：与上面几个数字同一口径（只统计当前 tab），几只基金按市值加权。
@@ -474,6 +481,18 @@ export default function App() {
           <div className="delta">
             <span className="delta-group">
               今日估算 <span className={`num ${tone(totalAmount)}`}>{signedMoney(totalAmount)}</span>
+              {totalAmountPct !== null && (
+                <span
+                  className={`num small ${tone(totalAmountPct)}`}
+                  title={
+                    blindCount > 0
+                      ? `分母为有行情的 ${valued.length} 只的昨日市值（${blindCount} 只无覆盖不计入）`
+                      : '分母为昨日市值'
+                  }
+                >
+                  {pctText(totalAmountPct)}
+                </span>
+              )}
             </span>
             <span className="delta-group">
               持有收益{' '}

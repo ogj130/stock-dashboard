@@ -10,7 +10,7 @@
  */
 
 import { summarizeAfterHours, type AfterHoursLite } from './afterHours'
-import { money, pctText, signedMoney, tone } from './format'
+import { money, pctFromDelta, pctText, signedMoney, tone } from './format'
 
 export const COMPACT_QUERY_KEY = 'compact'
 
@@ -130,7 +130,7 @@ export interface CompactView {
   totalText: string
   /** 今日估算的金额；无可用行情时是「行情不可用」，不是 0，也不是一个假数 */
   deltaText: string
-  /** 今日估算的百分比；分母是**有行情那几只**的市值，null 表示无法计算 */
+  /** 今日估算的百分比；分母是**有行情那几只**的变动前市值，null 表示无法计算 */
   deltaPctText: string | null
   deltaTone: Tone
   /** 持有收益：比今日估算更小、更淡，它不随 5 秒跳 */
@@ -228,11 +228,12 @@ export function deriveCompactView(input: CompactInput): CompactView {
   const totalValue = funds.reduce((sum, f) => sum + f.marketValue, 0)
   const holdProfit = funds.reduce((sum, f) => sum + f.holdingProfit, 0)
 
-  // 分母只能是「有行情那几只」的市值：拿全部市值当分母，覆盖率低的那天
-  // 折出来的百分比会把跌幅算轻，那是算错，不是保守。
+  // 分母只能是「有行情那几只」的**变动前**市值：拿全部市值当分母，覆盖率低的那天
+  // 折出来的百分比会把跌幅算轻；拿变动后的市值当分母，涨的日子偏小、跌的日子偏大。
+  // 后端这组数严格自洽（amount = 基准 × navPct/100），所以 pctFromDelta 能还原出 navPct。
   const coveredValue = covered.reduce((sum, f) => sum + f.marketValue, 0)
   const amount = covered.reduce((sum, f) => sum + f.amount, 0)
-  const pct = coveredValue > 0 ? (amount / coveredValue) * 100 : null
+  const pct = pctFromDelta(amount, coveredValue)
   const quotesAvailable = covered.length > 0
 
   return {
@@ -249,4 +250,236 @@ export function deriveCompactView(input: CompactInput): CompactView {
     quotesAvailable,
     rows: deriveFundRows(funds),
   }
+}
+
+/* ---------- 个股 Tab：把 16 只基金的持仓抬到「整个组合」这一层 ---------- */
+
+/** 卡片只读 breakdown 的这几个字段；与 FundEstimate.breakdown 同形 */
+export interface BreakdownLite {
+  symbol: string
+  name: string
+  /** 该票在这只基金里的权重（0~1） */
+  weight: number
+  /** 该票当日涨跌幅（百分数） */
+  pct: number
+  /** 当日成交额（美元）。行情源没给就没有这个键；只给「热度」排序用 */
+  turnover?: number
+}
+
+export interface KeyStockFund {
+  /** 这只基金的市值（用来把「基金内权重」折成「组合暴露」） */
+  marketValue: number
+  breakdown?: readonly BreakdownLite[]
+}
+
+export interface KeyStockRow {
+  symbol: string
+  /** 中文简称；缺失时退回 ticker（宁可显示 NVDA，也不要一行空白） */
+  name: string
+  /** 组合权重，百分数。分母是全部基金市值（含无行情的那些，持仓是真的） */
+  weightPct: number
+  /** 当日涨跌幅，百分数，按「美元暴露」加权 */
+  pct: number
+  weightText: string
+  pctText: string
+  pctTone: Tone
+  /** 当日成交额（美元），排序依据；行情源没给就是 null */
+  turnover: number | null
+  /** '$5.67B'；没有成交额时是 null（标题里不写这一句） */
+  turnoverText: string | null
+}
+
+/** 成交额的人类读法：5,671,975,014 → $5.67B。中文界面也吃英文量级缩写，比一长串数字好扫 */
+const USD_COMPACT = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 2,
+})
+
+export function turnoverText(usd: number | null): string | null {
+  if (usd === null || !Number.isFinite(usd) || usd <= 0) return null
+  return `$${USD_COMPACT.format(usd)}`
+}
+
+/**
+ * 主动型基金的持仓名来自指数成分表，是英文全称（"Apple Inc. Common Stock"）。
+ * 340px 的卡片里这些后缀只会挤掉真正有信息的部分，所以剥掉公司形式与证券类型；
+ * 中文简称（"英伟达"）原样不动。纯展示处理，不影响任何匹配与计算。
+ */
+const NAME_SUFFIXES: readonly RegExp[] = [
+  /[\s,]+common\s+stock$/i,
+  /[\s,]+class\s+[a-z]$/i,
+  /[\s,]+inc\.?$/i,
+  /[\s,]+corporation$/i,
+  /[\s,]+corp\.?$/i,
+  /[\s,]+ltd\.?$/i,
+  /[\s,]+plc$/i,
+]
+
+export function shortenStockName(raw: string): string {
+  let name = raw.trim()
+  // 反复剥：「Meta Platforms, Inc. Class A Common Stock」要先掉 Common Stock 才看得到 Class A
+  for (let round = 0; round < NAME_SUFFIXES.length; round += 1) {
+    for (const suffix of NAME_SUFFIXES) {
+      const next = name.replace(suffix, '').trim()
+      if (next !== '' && next !== name) name = next
+    }
+  }
+  return name
+}
+
+/**
+ * 多只基金的持仓 → 组合层面的「今日热门个股」。
+ *
+ * 聚合口径（不新增任何行情请求，全部复用 /api/estimate 的 breakdown）：
+ *   exposure(h) = Σ 基金市值 × 该票权重      → 组合权重 = exposure / Σ 基金市值
+ *   pct(h)      = Σ 暴露 × 涨跌 / exposure    → 美元暴露加权，不是简单平均
+ *
+ * 排序口径 = **热度**：当日成交额降序（用户 2026-11-12 定）。
+ * 成交额缺数据时退回组合暴露降序，再同值按 symbol 升序——必须显式给出次序，
+ * 不能靠 sort 的稳定性。为什么不是「按组合权重排」：权重回答不了「今天市场在炒什么」，
+ * 而这张卡的第二 Tab 就是想看持仓里哪几只在今天最活跃。
+ *
+ * 三条降级规则：同一 symbol 合并成一行；weight <= 0 / pct 非有限数直接跳过
+ * （不产出一个假 0）；breakdown 缺失的基金跳过。
+ */
+export function deriveKeyStocks(
+  funds: readonly KeyStockFund[],
+  limit = 8,
+): KeyStockRow[] {
+  const totalValue = funds.reduce(
+    (sum, f) => sum + (Number.isFinite(f.marketValue) ? f.marketValue : 0),
+    0,
+  )
+  const acc = new Map<
+    string,
+    { exposure: number; weighted: number; name: string; turnover: number }
+  >()
+
+  for (const f of funds) {
+    if (!Number.isFinite(f.marketValue)) continue
+    for (const h of f.breakdown ?? []) {
+      if (!(h.weight > 0) || !Number.isFinite(h.pct)) continue
+      const exposure = f.marketValue * h.weight
+      if (!(exposure > 0)) continue
+      const cur = acc.get(h.symbol) ?? { exposure: 0, weighted: 0, name: '', turnover: 0 }
+      cur.exposure += exposure
+      cur.weighted += exposure * h.pct
+      if (cur.name === '' && h.name.trim() !== '') cur.name = h.name.trim()
+      // 同一只票在每只基金的 breakdown 里成交额相同，取最大值只为容错
+      if (Number.isFinite(h.turnover) && (h.turnover as number) > cur.turnover) {
+        cur.turnover = h.turnover as number
+      }
+      acc.set(h.symbol, cur)
+    }
+  }
+
+  const ranked = [...acc.entries()]
+    .map(([symbol, v]) => ({ symbol, ...v }))
+    .sort(
+      (a, b) =>
+        b.turnover - a.turnover || b.exposure - a.exposure || a.symbol.localeCompare(b.symbol),
+    )
+    .slice(0, limit)
+
+  return ranked.map((r) => {
+    const pct = r.weighted / r.exposure
+    const weightPct = totalValue > 0 ? (r.exposure / totalValue) * 100 : 0
+    const turnover = r.turnover > 0 ? r.turnover : null
+    return {
+      symbol: r.symbol,
+      name: r.name === '' ? r.symbol : shortenStockName(r.name) || r.name,
+      weightPct,
+      pct,
+      weightText: `${weightPct.toFixed(2)}%`,
+      pctText: pctText(pct),
+      pctTone: tone(pct),
+      turnover,
+      turnoverText: turnoverText(turnover),
+    }
+  })
+}
+
+/* ---------- 大事 Tab：快讯与「持仓相关」标记 ---------- */
+
+export interface NewsItem {
+  id: string
+  title: string
+  url: string
+  /** 北京时间毫秒（东财 showtime 就是北京时间） */
+  tsMs: number
+  important: boolean
+}
+
+export interface NewsResponse {
+  items: NewsItem[]
+  tsMs: number
+  /** true = 这一轮没拉到，返回的是上一轮缓存 */
+  stale: boolean
+}
+
+export interface NewsRow {
+  id: string
+  /** '01:30'（北京时间，与快讯源同一时区） */
+  timeText: string
+  title: string
+  url: string
+  /** 源标记的重要事件（titlestyle !== '0'） */
+  important: boolean
+  /** 标题命中重点个股的中文名或 ticker */
+  related: boolean
+}
+
+const CN_CLOCK = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+})
+
+/** 北京时间 HH:MM；非法时间戳返回 '—'，不写 "Invalid Date" */
+export function newsClock(tsMs: number): string {
+  if (!Number.isFinite(tsMs) || tsMs <= 0) return DASH
+  return CN_CLOCK.format(new Date(tsMs))
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 标题是否命中重点个股。
+ *
+ * 只匹配标题、不匹配正文：把「提到英伟达」当成「英伟达的大事」会让每条新闻都
+ * 挂上「持仓」，标签就失去意义了。中文名要求长度 >= 2（单字名会误伤），
+ * ticker 要求词边界（NVDA 不能命中 "NVDIA" 这种拼写相近的词）。
+ */
+export function matchesHolding(title: string, stocks: readonly KeyStockRow[]): boolean {
+  for (const stock of stocks) {
+    const name = stock.name.trim()
+    if (name.length >= 2 && title.includes(name)) return true
+    if (stock.symbol !== '') {
+      const re = new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(stock.symbol)}([^A-Za-z0-9]|$)`, 'i')
+      if (re.test(title)) return true
+    }
+  }
+  return false
+}
+
+/**
+ * 快讯 → 卡片行。顺序由服务端定（重要优先、其余按时间降序），这里只做截断
+ * 与「时间/相关度」这两个纯展示判断，避免卡片 JSX 里再写分支。
+ */
+export function deriveNewsRows(
+  items: readonly NewsItem[],
+  stocks: readonly KeyStockRow[],
+  limit = 5,
+): NewsRow[] {
+  return items.slice(0, limit).map((item) => ({
+    id: item.id,
+    timeText: newsClock(item.tsMs),
+    title: item.title,
+    url: item.url,
+    important: item.important,
+    related: matchesHolding(item.title, stocks),
+  }))
 }

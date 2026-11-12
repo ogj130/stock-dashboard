@@ -7,6 +7,7 @@ import { registerFundRoutes } from './routes/funds'
 import { registerEstimateRoutes } from './routes/estimate'
 import { registerPortfolioRoutes } from './routes/portfolio'
 import { registerAccuracyRoutes } from './routes/accuracy'
+import { registerNewsRoutes } from './routes/news'
 import { QuoteRegistry } from './sources/registry'
 import { EastmoneySource, probeMarket } from './sources/eastmoney'
 import { MarketMap } from './sources/marketMap'
@@ -44,6 +45,7 @@ registerFundRoutes(app, db)
 registerPortfolioRoutes(app, db)
 registerAccuracyRoutes(app, db)
 // 快讯只服务菜单栏卡片的「大事」Tab；与估值链路完全解耦，挂了不影响任何数字
+registerNewsRoutes(app)
 
 /**
  * 市场码来自持仓报文的 NEWTEXCH（免费、准确），由 ensureMarkets 提前灌进这张表。

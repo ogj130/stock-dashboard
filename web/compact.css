@@ -183,9 +183,198 @@ html.cc-mode body {
   border-bottom: 1px solid var(--stroke-soft);
 }
 
+/* ---------- 三段切换（基金 / 个股 / 大事） ----------
+
+   22px 高，占掉基金列表约一行。默认「基金」，不持久化：每次拉起卡片先看持仓。
+   宽度三等分而不是内容宽度，切换时按钮不会跳位——置顶窗口里任何位移都会被余光看到。
+*/
+
+.cc-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  height: 22px;
+  box-sizing: border-box;
+  margin: 2px 0 1px;
+  padding: 1px;
+  border-radius: 7px;
+  border: 1px solid var(--stroke-soft);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cc-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+
+.cc-tab.on {
+  color: var(--text);
+  font-weight: 600;
+  border-color: rgba(120, 160, 255, 0.4);
+  background: rgba(88, 130, 255, 0.16);
+}
+
+/* 键盘焦点必须看得见：这张卡现在有可点的 Tab 与「完整页面」按钮 */
+.cc-tab:focus-visible {
+  outline: 1px solid rgba(120, 160, 255, 0.65);
+  outline-offset: 1px;
+}
+
+/* 快讯本轮没拉到、显示的是缓存：极淡两个字，不抢标题的注意力 */
+.cc-tab-cache {
+  font-style: normal;
+  font-size: 8px;
+  opacity: 0.55;
+}
+
+/* ---------- 个股 Tab ---------- */
+
+/* 名字与 ticker 同一行：名字可截断，ticker 定宽留在行尾——英文全称再长，
+   「NVDA」也必须看得见，那是这一行唯一的稳定身份 */
+.cc-stock .cc-stock-name {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.cc-stock-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cc-stock .cc-sym {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 9px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+/* 权重列 42px、涨跌列 52px：和基金列表的 46/64 不同，因为个股名往往比基金名短 */
+.cc-stock-w {
+  flex: 0 0 42px;
+  text-align: right;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cc-stock-p {
+  flex: 0 0 52px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ---------- 大事 Tab ----------
+
+   一条 = 时间 + 两行截断的标题 +（可选）两个标签 + 一个 ↗。
+   整条是一个 <button>：点哪都能在系统浏览器里打开，不用瞄准标题。
+   分隔线挂在 li 上，按钮自己不带边框——否则 hover 时会出现一道跳动的框。
+*/
+
+.cc-news-item {
+  border-bottom: 1px solid var(--stroke-soft);
+}
+
+.cc-news-item:last-child {
+  border-bottom: 0;
+}
+
+.cc-news-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+
+/* hover 用下划线而不是换底色：玻璃面板上一块实心色块太重，也会让行高看起来在跳 */
+.cc-news-row:hover .cc-news-title {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cc-news-row:focus-visible {
+  outline: 1px solid rgba(120, 160, 255, 0.65);
+  outline-offset: 1px;
+}
+
+/* 外链提示：9px 的 ↗，只在行的最右侧占一个字的宽度 */
+.cc-news-go {
+  flex: 0 0 auto;
+  padding-top: 1px;
+  font-style: normal;
+  font-size: 9px;
+  color: var(--muted);
+  opacity: 0.55;
+}
+
+.cc-news-time {
+  flex: 0 0 auto;
+  padding-top: 1px;
+  font-size: 9px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-news-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text);
+}
+
+/* 标签最多两个（重要 + 持仓），不换行：换行会把标题的可用宽度吃掉 */
+.cc-tag {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 8px;
+  line-height: 1.5;
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.cc-tag.imp {
+  color: var(--warn);
+  border: 1px solid rgba(245, 181, 68, 0.35);
+}
+
+.cc-tag.hold {
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
 /* ---------- 基金列表：唯一允许滚动的区域 ----------
 
-   卡片高度只有 480：汇总区 + 曲线 + 脚注都是固定高度，剩下约 300px 全给列表。
+   卡片高度只有 420：汇总区 + 曲线 + Tab + 脚注都是固定高度，剩下约 280px 全给列表。
    16 只基金在这个高度里是放不下的，所以要能滚——但滚动条不能画出来：
    这根条子会从圆角边缘切出去，把「一块玻璃」切成「一个网页表单」。
    scrollbar-width: none 管 Firefox / 新版 Safari，::-webkit-scrollbar 管 Chrome/Safari，

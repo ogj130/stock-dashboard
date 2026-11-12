@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import { money, pctText, signedMoney, tone } from './format'
+import { money, pctFromDelta, pctText, signedMoney, tone } from './format'
 import { findExtrema, windowExtremes } from './extrema'
 
 /**
@@ -310,13 +310,17 @@ export interface DeltaSummary {
 }
 
 /**
- * 角落那句「今日 +569.46 (+1.14%)」。
+ * 某个点在当前指标下的百分比。
  *
- * 两个口径不能混：
- *   · 总资产是**存量**，有意义的是窗口内的变化量（末 − 首），百分比也只对它成立；
- *   · 当日收益/持有收益是**可正可负的水平值**，有意义的是最新那一跳的数
- *     （"今天赚了多少" % 什么？没有可比的基数，所以不给百分比）。
+ * 收益类指标的基准是「现值 − 该指标值」：当日收益的基准是昨收市值，
+ * 持有收益的基准是成本。总资产是存量，没有可比的基准（窗口内涨幅由
+ * deltaSummary 按首点算），所以这里返回 null，调用方不画百分比。
  */
+function metricPctAt(point: HistoryPoint, metric: MetricKey): number | null {
+  if (metric === 'value') return null
+  return pctFromDelta(point[metric], point.value)
+}
+
 /**
  * 盘前视图的角落数字。
  *
@@ -328,15 +332,23 @@ export interface DeltaSummary {
 export function preDeltaSummary(points: HistoryPoint[], label: string): DeltaSummary {
   const last = points[points.length - 1]
   if (!last) return { text: `${label} —`, tone: 'flat' }
-  const closeValue = last.value - last.amount
   const delta = last.amount
-  const pct = closeValue > 0 ? (delta / closeValue) * 100 : null
+  const pct = pctFromDelta(delta, last.value)
   return {
     text: `${label} ${signedMoney(delta)}${pct === null ? '' : ` (${pctText(pct)})`}`,
     tone: tone(delta),
   }
 }
 
+/**
+ * 角落那句「今日 +569.46 (+1.14%)」。
+ *
+ * 三个指标现在都带百分比，但三条口径各不相同，不能混：
+ *   · 总资产是**存量**，百分比按窗口首点算（首点 = 这一段的起点）；
+ *   · 当日收益是水平值，百分比的分母是昨收市值（现值 − 当日收益）；
+ *   · 持有收益是水平值，百分比的分母是成本（现值 − 持有收益）。
+ * 拿现值当分母是这里最容易犯的错：涨的日子百分比偏小、跌的日子偏大。
+ */
 export function deltaSummary(
   points: HistoryPoint[],
   metric: MetricKey,
@@ -347,7 +359,11 @@ export function deltaSummary(
 
   if (metric !== 'value') {
     const level = last[metric]
-    return { text: `${label} ${signedMoney(level)}`, tone: tone(level) }
+    const pct = metricPctAt(last, metric)
+    return {
+      text: `${label} ${signedMoney(level)}${pct === null ? '' : ` (${pctText(pct)})`}`,
+      tone: tone(level),
+    }
   }
 
   const first = points[0]
@@ -408,7 +424,31 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
     if (index === undefined) return null
     return geo.coords[index] ?? null
   }
+  /** 极值提示里那句话的数值：总资产是金额，收益类带正负号 */
   const fmtValue = (v: number): string => (metric === 'value' ? money(v) : signedMoney(v))
+  /**
+   * 极值处的百分比。
+   *   · 收益类指标：和角落那句话同一套口径（分母是「现值 − 该值」）；
+   *   · 总资产：按窗口首点算（「最高那一刻比这一段的起点高多少」），
+   *     没有首点就没有基准，返回 null。
+   */
+  const windowStart = points[0]?.value
+  const pctOfIndex = (index: number | undefined): number | null => {
+    if (index === undefined) return null
+    const point = points[index]
+    if (point === undefined) return null
+    if (metric === 'value') {
+      return windowStart !== undefined && windowStart > 0
+        ? (point.value / windowStart - 1) * 100
+        : null
+    }
+    return pctFromDelta(point[metric], point.value)
+  }
+  const peakPct = pctOfIndex(ext.peak?.index)
+  const troughPct = pctOfIndex(ext.trough?.index)
+  /** 四舍五入后是 0.00% 的不画：图上已有金额，再来个 +0.00% 只是噪音 */
+  const showPct = (p: number | null): p is number => p !== null && Math.abs(p) >= 0.005
+  const lastPct = last === undefined ? null : metricPctAt(last, metric)
   const trend = delta.tone
   const title = metricLabel(metric)
 
@@ -418,7 +458,7 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
   const ariaLabel =
     n === 0
       ? `${title}曲线暂无数据（${label}）`
-      : `${title} ${label} 走势（${subtitle}），${money(geo.min)} 至 ${money(geo.max)}，最新 ${money(last?.[metric] ?? 0)}`
+      : `${title} ${label} 走势（${subtitle}），${money(geo.min)} 至 ${money(geo.max)}，最新 ${money(last?.[metric] ?? 0)}${lastPct === null ? '' : `（${pctText(lastPct)}）`}`
 
   function changeMetric(next: string): void {
     if (!isMetricKey(next)) return
@@ -522,15 +562,19 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
             </svg>
 
             {/* 标签放在曲线「外侧」：max 标签悬在最高点之上、min 标签沉在最低点之下，
-                这样无论涨还是跌都不会被自己的曲线压住 */}
+                这样无论涨还是跌都不会被自己的曲线压住。
+                收益类指标在后面补一个百分比：金额告诉你「赚了多少」，百分比才告诉你
+                「这个数在这笔仓位里算大还是小」——两者缺一都不够判断。 */}
             {n >= 2 && (
               <>
                 <span className="chart-y max num" style={{ top: `${geo.yMaxPct}%` }}>
                   {money(geo.max)}
+                  {showPct(peakPct) && <i className="chart-y-pct">{pctText(peakPct)}</i>}
                 </span>
                 {!geo.flat && (
                   <span className="chart-y min num" style={{ top: `${geo.yMinPct}%` }}>
                     {money(geo.min)}
+                    {showPct(troughPct) && <i className="chart-y-pct">{pctText(troughPct)}</i>}
                   </span>
                 )}
               </>
@@ -543,12 +587,13 @@ export default function PortfolioChart({ range, data, onRangeChange }: Portfolio
                 const mark = markOf(point?.index)
                 if (!point || !mark) return null
                 const time = pointTimeLabel(shownRange, points[point.index]!.tsMs)
+                const pct = kind === 'peak' ? peakPct : troughPct
                 return (
                   <span
                     key={kind}
                     className={`chart-ext ${kind}`}
                     style={{ left: `${mark.xPct}%`, top: `${mark.yPct}%` }}
-                    title={`${kind === 'peak' ? '最高' : '最低'} ${fmtValue(point.value)} · ${time}`}
+                    title={`${kind === 'peak' ? '最高' : '最低'} ${fmtValue(point.value)}${pct === null ? '' : ` (${pctText(pct)})`} · ${time}`}
                   >
                     <i aria-hidden="true" />
                     <b className="num">{time}</b>

@@ -203,7 +203,7 @@ describe('buildGeometry · 纵轴跟着选中的序列走', () => {
     // 退化区间不许除零：min/max 标签都压在中线
     expect(g.yMaxPct).toBe(50)
     expect(g.yMinPct).toBe(50)
-    expect(deltaSummary(zeros, 'profit', '今日').text).toBe('今日 0.00')
+    expect(deltaSummary(zeros, 'profit', '今日').text).toBe('今日 0.00 (0.00%)')
   })
 
   it('全负（一直浮亏）：零线在框外，不画；填充贴顶而不是贴底', () => {
@@ -229,16 +229,18 @@ describe('deltaSummary · 角落那句话必须跟指标对口径', () => {
     })
   })
 
-  it('当日收益：最新一跳的水平值，不带百分比', () => {
+  it('当日收益：最新一跳的水平值 + 百分比（分母是昨收市值）', () => {
     expect(deltaSummary(points, 'amount', '今日')).toEqual({
-      text: '今日 +7,515.49',
+      // 7,515.49 / (50,569.46 − 7,515.49) = 17.46%
+      text: '今日 +7,515.49 (+17.46%)',
       tone: 'up',
     })
   })
 
-  it('持有收益：最新一跳的水平值，不带百分比', () => {
+  it('持有收益：最新一跳的水平值 + 百分比（分母是成本）', () => {
     expect(deltaSummary(points, 'profit', '今日')).toEqual({
-      text: '今日 +15,907.66',
+      // 15,907.66 / (50,569.46 − 15,907.66) = 45.89%
+      text: '今日 +15,907.66 (+45.89%)',
       tone: 'up',
     })
   })
@@ -249,7 +251,8 @@ describe('deltaSummary · 角落那句话必须跟指标对口径', () => {
       { tsMs: 1, value: 1, amount: -500, profit: 0, valuePre: null, amountPre: null },
     ]
     expect(deltaSummary(negative, 'amount', '今日').tone).toBe('down')
-    expect(deltaSummary(negative, 'amount', '今日').text).toBe('今日 -500.00')
+    // 这个夹具故意把基准压到 1 元：百分比必须跟着基准走，而不是拿现值除
+    expect(deltaSummary(negative, 'amount', '今日').text).toBe('今日 -500.00 (-99.80%)')
     expect(
       deltaSummary(
         [{ tsMs: 0, value: 1, amount: 0, profit: 0, valuePre: null, amountPre: null }],
@@ -262,7 +265,21 @@ describe('deltaSummary · 角落那句话必须跟指标对口径', () => {
   it('空数据与单点：总资产说「—」而不是 0.00，收益类仍给水平值', () => {
     expect(deltaSummary([], 'value', '今日').text).toBe('今日 —')
     expect(deltaSummary([p(84_000)], 'value', '今日').text).toBe('今日 —')
-    expect(deltaSummary([p(84_000, 0, { profit: -2.5 })], 'profit', '今日').text).toBe('今日 -2.50')
+    // -2.50 / 84,002.50 四舍五入后就是 0.00%：极小值不许写成 -0.00%
+    expect(deltaSummary([p(84_000, 0, { profit: -2.5 })], 'profit', '今日').text).toBe(
+      '今日 -2.50 (0.00%)',
+    )
+  })
+
+  it('基准算不出来（现值 ≤ 变动额）时只给金额，不编百分比', () => {
+    const weird: HistoryPoint[] = [
+      { tsMs: 0, value: 100, amount: 0, profit: 0, valuePre: null, amountPre: null },
+      { tsMs: 1, value: 100, amount: 300, profit: 0, valuePre: null, amountPre: null },
+    ]
+    expect(deltaSummary(weird, 'amount', '今日')).toEqual({
+      text: '今日 +300.00',
+      tone: 'up',
+    })
   })
 })
 

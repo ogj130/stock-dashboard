@@ -377,6 +377,18 @@ body {
   transform: translateY(-100%);
 }
 
+/**
+ * max/min 标签后面的百分比：同一行、更淡一档。
+ * 金额是结论，百分比是量级参照，两者不该等重；也不另起一行——
+ * 图上已经有极值时间、转折点、零基线，多一行就糊了。
+ */
+.chart-y-pct {
+  margin-left: 4px;
+  font-style: normal;
+  font-size: 9px;
+  opacity: 0.75;
+}
+
 /* 末端圆点用 HTML 画：SVG 的 circle 会被 preserveAspectRatio="none" 拉成椭圆 */
 /* 局部极值标记。
    峰/谷用小空心点 + 时间，转折点（pivot）只是个更淡的小点：

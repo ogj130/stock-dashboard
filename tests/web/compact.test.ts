@@ -7,10 +7,18 @@ import {
   compactClock,
   deriveCompactView,
   deriveFundRows,
+  deriveKeyStocks,
+  deriveNewsRows,
   isCompactQuery,
+  matchesHolding,
+  newsClock,
+  shortenStockName,
   tailPoints,
+  turnoverText,
   type CompactFund,
   type CompactInput,
+  type KeyStockRow,
+  type NewsItem,
 } from '../../web/compact'
 
 /**
@@ -145,7 +153,7 @@ describe('deriveCompactView · 零覆盖', () => {
     expect(view.blindCount).toBe(2)
   })
 
-  it('部分覆盖 → 只在有行情的几只上求和，百分比分母也只取它们的市值', () => {
+  it('部分覆盖 → 只在有行情的几只上求和，百分比分母也只取它们的变动前市值', () => {
     const view = deriveCompactView(
       input({
         funds: [
@@ -155,7 +163,8 @@ describe('deriveCompactView · 零覆盖', () => {
       }),
     )
     expect(view.deltaText).toBe('+100.00')
-    expect(view.deltaPctText).toBe('+1.00%')
+    // 100 / (10,000 − 100) = 1.01%
+    expect(view.deltaPctText).toBe('+1.01%')
     expect(view.blindCount).toBe(1)
     expect(view.quotesAvailable).toBe(true)
     // 总资产仍然是全部持仓
@@ -181,7 +190,8 @@ describe('deriveCompactView · 正常读数', () => {
     )
     expect(view.totalText).toBe('49,618.91')
     expect(view.deltaText).toBe('+1,686.26')
-    expect(view.deltaPctText).toBe('+3.40%')
+    // 1,686.26 / (49,618.91 − 1,686.26) = 3.52%
+    expect(view.deltaPctText).toBe('+3.52%')
     expect(view.deltaTone).toBe('up')
     expect(view.holdText).toBe('+14,332.62')
   })
@@ -191,7 +201,8 @@ describe('deriveCompactView · 正常读数', () => {
       input({ funds: [fund({ marketValue: 10_000, amount: -250, holdingProfit: -800 })] }),
     )
     expect(view.deltaText).toBe('-250.00')
-    expect(view.deltaPctText).toBe('-2.50%')
+    // 250 / (10,000 + 250) = 2.44%（分母是跌之前的 10,250）
+    expect(view.deltaPctText).toBe('-2.44%')
     expect(view.deltaTone).toBe('down')
     expect(view.holdText).toBe('-800.00')
   })
@@ -372,5 +383,248 @@ describe('deriveCompactView · 夜盘段', () => {
   it('空列表 / 连不上后端时也是 null，不会凭空冒出一段夜盘', () => {
     expect(deriveCompactView(input({ funds: [] })).afterHoursText).toBeNull()
     expect(deriveCompactView(input({ funds: [], error: 'boom' })).afterHoursText).toBeNull()
+  })
+})
+
+/* ---------- 个股 Tab ---------- */
+
+const keyFund = (
+  marketValue: number,
+  breakdown?: Array<{ symbol: string; name: string; weight: number; pct: number; turnover?: number }>,
+) => ({ marketValue, breakdown })
+
+const stock = (over: Partial<KeyStockRow> = {}): KeyStockRow => ({
+  symbol: 'NVDA',
+  name: '英伟达',
+  weightPct: 10,
+  pct: 2,
+  weightText: '10.00%',
+  pctText: '+2.00%',
+  pctTone: 'up',
+  turnover: null,
+  turnoverText: null,
+  ...over,
+})
+
+describe('deriveKeyStocks · 多只基金的同一只票要合并', () => {
+  it('同 symbol 合并成一行：暴露相加、涨跌按美元暴露加权', () => {
+    const rows = deriveKeyStocks([
+      keyFund(60_000, [{ symbol: 'NVDA', name: '英伟达', weight: 0.1, pct: 2 }]),
+      keyFund(40_000, [{ symbol: 'NVDA', name: '', weight: 0.2, pct: 4 }]),
+    ])
+    expect(rows).toHaveLength(1)
+    // 暴露 = 6,000 + 8,000；权重分母是全部基金市值 100,000
+    expect(rows[0]).toMatchObject({
+      symbol: 'NVDA',
+      name: '英伟达',
+      weightText: '14.00%',
+      // (6,000×2 + 8,000×4) / 14,000 = 3.1428…
+      pctText: '+3.14%',
+      pctTone: 'up',
+    })
+  })
+
+  it('权重分母含没有 breakdown 的基金（持仓是真的，只是看不到明细）', () => {
+    const rows = deriveKeyStocks([
+      keyFund(50_000, [{ symbol: 'AAPL', name: '苹果', weight: 0.2, pct: 1 }]),
+      keyFund(50_000),
+    ])
+    expect(rows[0]!.weightText).toBe('10.00%')
+  })
+
+  it('按暴露降序、同暴露按 symbol 升序，超过 8 只截断', () => {
+    const breakdown = Array.from({ length: 10 }, (_, i) => ({
+      symbol: `S${i}`,
+      name: `票${i}`,
+      weight: 0.01,
+      pct: 1,
+    }))
+    const rows = deriveKeyStocks([keyFund(100_000, breakdown)])
+    expect(rows).toHaveLength(8)
+    // 全部暴露相同（1,000），按 symbol 升序：S0..S7
+    expect(rows.map((r) => r.symbol)).toEqual(['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'])
+  })
+
+  it('weight <= 0 / pct 非有限数 / 没有 breakdown → 跳过，不产出假 0', () => {
+    const rows = deriveKeyStocks([
+      keyFund(100_000, [
+        { symbol: 'ZERO', name: '零权重', weight: 0, pct: 3 },
+        { symbol: 'NAN', name: '坏数', weight: 0.1, pct: Number.NaN },
+        { symbol: 'OK', name: '正常', weight: 0.1, pct: -1.5 },
+      ]),
+      keyFund(10_000),
+    ])
+    expect(rows.map((r) => r.symbol)).toEqual(['OK'])
+    expect(rows[0]!.pctText).toBe('-1.50%')
+    expect(rows[0]!.pctTone).toBe('down')
+  })
+
+  it('按当日成交额降序排（热度），不是按组合权重', () => {
+    const rows = deriveKeyStocks([
+      keyFund(100_000, [
+        { symbol: 'BIG', name: '大仓位', weight: 0.3, pct: 1, turnover: 1_000 },
+        { symbol: 'HOT', name: '热门', weight: 0.05, pct: 2, turnover: 9_000 },
+      ]),
+    ])
+    expect(rows.map((r) => r.symbol)).toEqual(['HOT', 'BIG'])
+    expect(rows[0]!.turnoverText).toBe('$9K')
+    // 权重仍然如实显示（热度只决定顺序，不改口径）
+    expect(rows[0]!.weightText).toBe('5.00%')
+  })
+
+  it('没有成交额时退回组合暴露降序（而不是把热度当成 0 排在最后）', () => {
+    const rows = deriveKeyStocks([
+      keyFund(100_000, [
+        { symbol: 'A', name: '甲', weight: 0.01, pct: 1 },
+        { symbol: 'B', name: '乙', weight: 0.2, pct: 1 },
+      ]),
+    ])
+    expect(rows.map((r) => r.symbol)).toEqual(['B', 'A'])
+    expect(rows[0]!.turnover).toBeNull()
+    expect(rows[0]!.turnoverText).toBeNull()
+  })
+
+  it('成交额与暴露都相同时按 symbol 升序（显式次序，不靠 sort 稳定性）', () => {
+    const rows = deriveKeyStocks([
+      keyFund(100_000, [
+        { symbol: 'ZZZ', name: 'Z', weight: 0.1, pct: 1, turnover: 5_000 },
+        { symbol: 'AAA', name: 'A', weight: 0.1, pct: 1, turnover: 5_000 },
+      ]),
+    ])
+    expect(rows.map((r) => r.symbol)).toEqual(['AAA', 'ZZZ'])
+  })
+
+  it('名称缺失时退回 symbol（宁可显示 NVDA，也不要一行空白）', () => {
+    const rows = deriveKeyStocks([
+      keyFund(10_000, [{ symbol: 'NVDA', name: '   ', weight: 0.5, pct: 1 }]),
+    ])
+    expect(rows[0]!.name).toBe('NVDA')
+  })
+
+  it('一股持仓数据都没有 → 空数组（卡片据此显示「暂无持仓明细」）', () => {
+    expect(deriveKeyStocks([])).toEqual([])
+    expect(deriveKeyStocks([keyFund(10_000)])).toEqual([])
+  })
+})
+
+/* ---------- 大事 Tab ---------- */
+
+/** 2026-11-12 01:30:47 北京时间 */
+const NEWS_MS = Date.UTC(2026, 10, 11, 17, 30, 47)
+
+const news = (over: Partial<NewsItem> = {}): NewsItem => ({
+  id: 'n1',
+  title: '英伟达盘后涨超 3%',
+  url: 'https://wap.eastmoney.com/a/1.html',
+  tsMs: NEWS_MS,
+  important: false,
+  ...over,
+})
+
+describe('newsClock · 北京时间', () => {
+  it('epoch → 北京 HH:MM（不是本地时区）', () => {
+    expect(newsClock(NEWS_MS)).toBe('01:30')
+  })
+
+  it('非法时间戳 → —，不写 Invalid Date', () => {
+    expect(newsClock(0)).toBe(DASH)
+    expect(newsClock(Number.NaN)).toBe(DASH)
+  })
+})
+
+describe('matchesHolding · 只认标题里的持仓名', () => {
+  const stocks = [stock({ symbol: 'NVDA', name: '英伟达' }), stock({ symbol: 'AAPL', name: '苹果' })]
+
+  it('中文名包含即命中（长度 >= 2）', () => {
+    expect(matchesHolding('英伟达发布新一代芯片', stocks)).toBe(true)
+  })
+
+  it('ticker 按词边界匹配、大小写不敏感', () => {
+    expect(matchesHolding('nvda 盘后上涨', stocks)).toBe(true)
+    expect(matchesHolding('(NVDA) 财报超预期', stocks)).toBe(true)
+    // 拼写相近但不是这个词：不能算「持仓相关」
+    expect(matchesHolding('NVDIA 的传闻', stocks)).toBe(false)
+  })
+
+  it('单字中文名不参与匹配（会误伤几乎所有标题）', () => {
+    const single = [stock({ symbol: 'X', name: '美' })]
+    expect(matchesHolding('美国通胀数据公布', single)).toBe(false)
+  })
+
+  it('没有持仓 → 一律 false', () => {
+    expect(matchesHolding('英伟达发布新一代芯片', [])).toBe(false)
+  })
+})
+
+describe('deriveNewsRows · 卡片要的三列', () => {
+  const stocks = [stock({ symbol: 'NVDA', name: '英伟达' })]
+
+  it('时间取北京时间、标题原样、标签来自 important / 命中', () => {
+    const rows = deriveNewsRows([news({ important: true })], stocks, 5)
+    expect(rows).toEqual([
+      {
+        id: 'n1',
+        timeText: '01:30',
+        title: '英伟达盘后涨超 3%',
+        url: 'https://wap.eastmoney.com/a/1.html',
+        important: true,
+        related: true,
+      },
+    ])
+  })
+
+  it('不相关的快讯不带「持仓」标记', () => {
+    const rows = deriveNewsRows([news({ title: '欧洲股市收盘再创纪录' })], stocks, 5)
+    expect(rows[0]!.related).toBe(false)
+  })
+
+  it('只取前 limit 条，顺序由服务端决定', () => {
+    const items = Array.from({ length: 8 }, (_, i) => news({ id: `n${i}`, title: `标题${i}` }))
+    expect(deriveNewsRows(items, stocks, 5).map((r) => r.id)).toEqual([
+      'n0',
+      'n1',
+      'n2',
+      'n3',
+      'n4',
+    ])
+  })
+
+  it('空列表 → 空数组（卡片据此显示「资讯暂不可用」）', () => {
+    expect(deriveNewsRows([], stocks, 5)).toEqual([])
+  })
+})
+
+
+describe('shortenStockName · 卡片里只留能认人的部分', () => {
+  it('剥掉公司形式与证券类型', () => {
+    expect(shortenStockName('Apple Inc. Common Stock')).toBe('Apple')
+    expect(shortenStockName('NVIDIA Corporation Common Stock')).toBe('NVIDIA')
+    expect(shortenStockName('Meta Platforms, Inc. Class A Common Stock')).toBe('Meta Platforms')
+    expect(shortenStockName('Broadcom Inc. Common Stock')).toBe('Broadcom')
+  })
+
+  it('中文简称原样保留', () => {
+    expect(shortenStockName('英伟达')).toBe('英伟达')
+    expect(shortenStockName('苹果')).toBe('苹果')
+  })
+
+  it('全是后缀的怪名字不被剥成空串（调用方还会再兜一次）', () => {
+    expect(shortenStockName('')).toBe('')
+    expect(shortenStockName('Corporation')).toBe('Corporation')
+  })
+})
+
+
+describe('turnoverText · 成交额的人类读法', () => {
+  it('十亿/百万量级用英文缩写', () => {
+    expect(turnoverText(5_671_975_014)).toBe('$5.67B')
+    expect(turnoverText(305_778_826)).toBe('$305.78M')
+    expect(turnoverText(9_000)).toBe('$9K')
+  })
+
+  it('没有数据 / 0 / 非有限数 → null（标题里不写这一句）', () => {
+    expect(turnoverText(null)).toBeNull()
+    expect(turnoverText(0)).toBeNull()
+    expect(turnoverText(Number.NaN)).toBeNull()
   })
 })
