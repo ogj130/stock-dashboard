@@ -130,11 +130,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 return
             }
 
+            // 盘前时后端给的 marketValue/amount 仍然是「上一交易日收盘」那一场，
+            // 盘前那一段在 preMarket 里。只拿顶层字段求和，菜单栏就会把昨天的实盘
+            // 当成现在——和卡片里「盘前」的数字直接打架（2026-11-12 用户截图）。
+            // 这里与 web/preView.ts 的 applyPreView 保持同一套换算。
+            let phase = (obj["phase"] as? String) ?? "settled"
             var total = 0.0
             var amount = 0.0
             for f in funds {
-                total += (f["marketValue"] as? Double) ?? 0
-                amount += (f["amount"] as? Double) ?? 0
+                let closeValue = (f["marketValue"] as? Double) ?? 0
+                if phase == "pre",
+                   let pm = f["preMarket"] as? [String: Any],
+                   let prePct = pm["navPct"] as? Double,
+                   prePct.isFinite {
+                    total += closeValue * (1 + prePct / 100)
+                    amount += closeValue * (prePct / 100)
+                } else {
+                    total += closeValue
+                    amount += (f["amount"] as? Double) ?? 0
+                }
             }
             // 百分比以「昨收市值」为分母，与券商 App 的当日涨幅同口径
             let base = total - amount
